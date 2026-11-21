@@ -20,7 +20,7 @@ from unittest import mock
 
 import coverage
 
-import tests  # noqa: F401 - installs the test guards
+import tests  # installs the test guards
 from scripts import run_tests, testroot
 
 REPO = Path(__file__).resolve().parents[1]
