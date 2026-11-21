@@ -414,6 +414,79 @@ class RunTests(RepoCase):
         self.assertTrue(run_tests.remove(root))
         self.assertFalse(os.path.lexists(root))
 
+    def test_a_wide_tree_is_unlocked_with_few_descriptors(self):
+        # 96 unreadable siblings, each with an unreadable directory inside,
+        # under a 48-descriptor limit: each must be opened to reach its inside.
+        code = (
+            "import os, resource, sys\n"
+            "from pathlib import Path\n"
+            "from scripts import run_tests\n"
+            "root = Path(sys.argv[1])\n"
+            "for n in range(96):\n"
+            "    (root / str(n) / 'inner' / 'deeper').mkdir(parents=True)\n"
+            "    os.chmod(root / str(n) / 'inner', 0)\n"
+            "    os.chmod(root / str(n), 0)\n"
+            "hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]\n"
+            "resource.setrlimit(resource.RLIMIT_NOFILE, (48, hard))\n"
+            "print(run_tests.remove(root), root.exists())\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(self.base / "wide")],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual((result.stdout, result.stderr), ("True False\n", ""))
+
+    def test_a_file_root_keeps_its_mode(self):
+        # A hard link: changing the root's mode would change the outside file.
+        outside = self.base / "outside"
+        outside.write_text("keep")
+        outside.chmod(0o444)
+        root = self.base / "root"
+        os.link(outside, root)
+        self.assertFalse(run_tests.remove(root))
+        self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o444)
+
+    def test_unlocking_skips_what_it_cannot_list(self):
+        run_tests.unlock(self.base / "missing")
+        root = self.base / "root"
+        (root / "child" / "inner").mkdir(parents=True)
+        os.chmod(root / "child" / "inner", 0)
+        real, calls = os.scandir, []
+
+        def scandir(fd):
+            calls.append(fd)
+            if len(calls) > 1:
+                raise OSError("cannot list")
+            return real(fd)
+
+        with mock.patch.object(run_tests.os, "scandir", scandir):
+            run_tests.unlock(root)
+        # The child's mode changed, but nothing below it was listed.
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(stat.S_IMODE((root / "child").stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((root / "child" / "inner").stat().st_mode), 0)
+        os.chmod(root / "child" / "inner", 0o700)
+
+    def test_unlocking_closes_its_descriptors_on_an_error(self):
+        root = self.base / "root"
+        (root / "child").mkdir(parents=True)
+        real, opened = run_tests.enter, []
+
+        def enter(parent, name):
+            if parent is not None:
+                raise RuntimeError("unexpected")
+            opened.append(real(parent, name))
+            return opened[-1]
+
+        with mock.patch.object(run_tests, "enter", enter):
+            with self.assertRaises(RuntimeError):
+                run_tests.unlock(root)
+        with self.assertRaises(OSError):
+            os.fstat(opened[0][0])
+
     def test_a_root_that_is_a_link_is_never_followed(self):
         outside, modes = self.outside_tree()
         link = self.base / "root"
@@ -925,12 +998,20 @@ def stop(process):
             process.communicate(timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
-    process.communicate()
+            process.communicate()
+    else:
+        process.wait()
 
 
-def kill(pid):
-    with suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+def kill_fixture(pid, marker):
+    """SIGKILL ``pid`` only while it is still the fixture that names ``marker``."""
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return
+    if os.fsencode(marker) in command and not gone(pid):
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def gone(pid):
@@ -1047,7 +1128,7 @@ class RealWorkerTests(NestedRootCase):
         )
         lines = outcome.output.splitlines()
         grandchild = int(lines[0])
-        self.addCleanup(kill, grandchild)
+        self.addCleanup(kill_fixture, grandchild, marker)
         self.assertEqual((outcome.status, lines[1:]), ("TIMEOUT", ["dump"]))
         # Without its own session the worker outlives the group kill.
         self.assertLess(outcome.seconds, 10)

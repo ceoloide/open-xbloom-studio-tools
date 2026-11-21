@@ -16,6 +16,12 @@ SIGHUP or SIGQUIT), its workers and run root are left behind. A worker's root
 is exactly as long as the root of a bare ``python -m unittest`` run, so a long
 ``XBLOOM_STUDIO_TEST_TMPBASE`` that breaks socket paths here breaks them there
 too: the socket tests allow a base of at most 26 bytes.
+
+Removing a run root never follows a link and never changes the mode of
+anything but a directory. The runner creates the run root with mode 0700:
+other users cannot enter it, and a process of the same user that races the
+removal could already do anything the runner can, so the removal does not
+defend against one.
 """
 
 from __future__ import annotations
@@ -443,30 +449,51 @@ def remove(root: Path) -> bool:
 
 
 def unlock(root: Path) -> None:
-    """Give the owner rwx on directory ``root`` and every directory below it."""
-    opened: list[int] = []
-    # (parent descriptor, name); a stack, not recursion: trees can be deep.
-    pending: list[tuple[int | None, str]] = [(None, str(root))]
+    """Give the owner rwx on directory ``root`` and every directory below it.
+
+    Walks with a stack of open directories, one per level, so it needs as
+    many descriptors as the tree is deep, not as it is wide.
+    """
+    top = enter(None, str(root))
+    stack = [top] if top else []
     try:
-        while pending:
-            parent, name = pending.pop()
-            # Changes a directory itself; refuses a link, whatever it points at.
-            with contextlib.suppress(OSError, ValueError, NotImplementedError):
-                os.chmod(name, stat.S_IRWXU, dir_fd=parent, follow_symlinks=False)
-            try:
-                fd = os.open(
-                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
-                )
-            except OSError:
-                continue  # a link, gone or still unreadable
-            opened.append(fd)
-            with os.scandir(fd) as entries:
-                pending += [
-                    (fd, e.name) for e in entries if e.is_dir(follow_symlinks=False)
-                ]
+        while stack:
+            fd, names = stack[-1]
+            name = next(names, None)
+            if name is None:
+                os.close(fd)
+                stack.pop()
+                continue
+            child = enter(fd, name)
+            if child:
+                stack.append(child)
     finally:
-        for fd in opened:
+        for fd, _ in stack:
             os.close(fd)
+
+
+def enter(parent: int | None, name: str) -> tuple[int, Iterator[str]] | None:
+    """Unlock and open directory ``name``; return it and its subdirectories.
+
+    None for anything that is not a directory, a link included, or that
+    cannot be read even after the change.
+    """
+    try:
+        if not stat.S_ISDIR(os.lstat(name, dir_fd=parent).st_mode):
+            return None  # never chmod a file, which may be linked elsewhere
+        # Refuses a link that replaced the directory, whatever it points at.
+        with contextlib.suppress(OSError, ValueError, NotImplementedError):
+            os.chmod(name, stat.S_IRWXU, dir_fd=parent, follow_symlinks=False)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    except OSError:
+        return None  # gone, unreadable or a link; the caller reports the rest
+    try:
+        with os.scandir(fd) as entries:
+            names = [e.name for e in entries if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        os.close(fd)
+        return None
+    return fd, iter(names)
 
 
 def line(outcome: Outcome) -> str:
