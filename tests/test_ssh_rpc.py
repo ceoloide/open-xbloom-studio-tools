@@ -24,9 +24,9 @@ from xbloom_studio.storage import Store
 
 # Fixture processes die with their parent (prctl PR_SET_PDEATHSIG), and exit
 # if it is gone already, so an interrupted run leaves none behind. When
-# XBS_TEST_PIDS is set they append their pid to it once armed.
+# XBS_TEST_PIDS is set they append "<pid> <role>" to it once armed.
 ARMED = """
-def armed(signum, parent):
+def armed(signum, parent, role):
     if sys.platform.startswith("linux"):
         import ctypes
         ctypes.CDLL(None).prctl(1, signum)
@@ -34,7 +34,7 @@ def armed(signum, parent):
             os.kill(os.getpid(), signum)
     if os.environ.get("XBS_TEST_PIDS"):
         with open(os.environ["XBS_TEST_PIDS"], "a") as pids:
-            pids.write(f"{os.getpid()}\\n")
+            pids.write(f"{os.getpid()} {role}\\n")
 """
 # Records its parent's death in a marker; killed with its group by SIGKILL,
 # it never gets to. argv: parent pid, marker.
@@ -50,7 +50,7 @@ def orphaned(*_):
     os._exit(0)
 # Not SIGTERM: the caller's group termination may send that.
 signal.signal(signal.SIGUSR2, orphaned)
-armed(signal.SIGUSR2, int(sys.argv[1]))
+armed(signal.SIGUSR2, int(sys.argv[1]), "descendant")
 time.sleep(10)
 """
 )
@@ -61,7 +61,7 @@ from pathlib import Path
 """
     + ARMED
     + """
-armed(signal.SIGKILL, int(os.environ["FAKE_SSH_PARENT"]))
+armed(signal.SIGKILL, int(os.environ["FAKE_SSH_PARENT"]), "ssh")
 if os.environ["FAKE_SSH_MODE"] == "closed":
     sys.exit(0)
 request = sys.stdin.buffer.read()
@@ -237,7 +237,7 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
                 self.addCleanup(parent.kill)
                 pid = int(parent.stdout.readline())
                 for _ in range(1000 if not expected else 0):
-                    if armed.read_text() == f"{pid}\n":
+                    if armed.read_text() == f"{pid} ssh\n":
                         break
                     await asyncio.sleep(0.01)
                 parent.kill()

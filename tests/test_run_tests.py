@@ -792,11 +792,17 @@ WORKER = (
 # Fixture processes append their pid to this file, when it is set, once they
 # are sure to die with their parent.
 PIDS = "XBS_TEST_PIDS"
-RECORD = (
-    f"if os.environ.get({PIDS!r}):\n"
-    f"    with open(os.environ[{PIDS!r}], 'a') as pids:\n"
-    "        pids.write(f'{os.getpid()}\\n')\n"
-)
+
+
+def record(role):
+    """Source that appends ``<pid> <role>`` to the PIDS file, when it is set."""
+    return (
+        f"if os.environ.get({PIDS!r}):\n"
+        f"    with open(os.environ[{PIDS!r}], 'a') as pids:\n"
+        f"        pids.write(f'{{os.getpid()}} {role}\\n')\n"
+    )
+
+
 # The grandchild learns of its parent's death by SIGTERM (prctl
 # PR_SET_PDEATHSIG) and records it in a marker before it exits; killed with
 # its group, it never gets to. A parent already gone before prctl counts too.
@@ -812,7 +818,7 @@ ORPHAN = (
     "signal.signal(signal.SIGTERM, orphaned)\n"
     "ctypes.CDLL(None).prctl(1, signal.SIGTERM)\n"
     "if os.getppid() != int(sys.argv[2]):\n"
-    "    orphaned()\n" + RECORD + "print(os.getpid(), flush=True)\n"
+    "    orphaned()\n" + record("grandchild") + "print(os.getpid(), flush=True)\n"
     "time.sleep(20)\n"
 )
 
@@ -838,13 +844,17 @@ def hangs(marker):
         "import ctypes, os, signal, subprocess, sys, time\n"
         "ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
         f"if os.getppid() != {os.getpid()}:\n"
-        "    sys.exit(1)\n" + RECORD + "signal.signal(signal.SIGUSR1,"
+        "    sys.exit(1)\n" + record("worker") + "signal.signal(signal.SIGUSR1,"
         " lambda *_: print('dump', flush=True))\n"
         f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
         f" {str(marker)!r}, str(os.getpid())], stdout=subprocess.PIPE, text=True)\n"
         "print(grandchild.stdout.readline().strip(), flush=True)\n"
         "time.sleep(20)\n"
     )
+
+
+def roles(pids):
+    return {line.split()[1] for line in pids.read_text().splitlines()}
 
 
 def kill(pid):
@@ -911,16 +921,18 @@ class RealWorkerTests(NestedRootCase):
                     text=True,
                 )
                 self.addCleanup(runner.kill)
-                # The nested worker, its grandchild and at least one fake ssh.
+                # The nested worker, its grandchild and a fake ssh are armed.
                 deadline = time.monotonic() + 30
-                while len(pids.read_text().split()) < 3:
+                while not {"worker", "grandchild", "ssh"} <= roles(pids):
                     self.assertLess(time.monotonic(), deadline)
                     self.assertIsNone(runner.poll(), "finished before the interrupt")
                     time.sleep(0.02)
                 runner.send_signal(signum)
                 output, _ = runner.communicate(timeout=60)
                 self.assertEqual(runner.returncode, 128 + signum, output)
-                recorded = [int(pid) for pid in pids.read_text().split()]
+                recorded = [
+                    int(line.split()[0]) for line in pids.read_text().splitlines()
+                ]
                 for pid in recorded:
                     self.addCleanup(kill, pid)
                 deadline = time.monotonic() + 5
