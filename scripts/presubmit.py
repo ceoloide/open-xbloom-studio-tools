@@ -6,6 +6,10 @@ A failing step does not stop the run: the steps after it still run, except
 those that need its output, which are reported as ``skipped (needs X)``. The
 run ends with a table of every step, then a rerun command for each failure
 and, where one exists, the command that fixes it.
+
+The rerun command for the lockfile step uses ``uv run --frozen``, not
+``--locked``: with a stale lockfile, ``--locked`` stops inside uv before this
+script starts.
 """
 
 from __future__ import annotations
@@ -40,11 +44,13 @@ PRODUCERS = {
     "distribution": "build",
 }
 SLOW = ("build", "distribution")
-RERUN = "uv run --locked python -m scripts.presubmit --only"
+RERUN = "uv run {} python -m scripts.presubmit --only {}"
+# In the order to apply them: removing an unused import can leave a blank
+# line that only the formatter removes.
 FIXES = {
     "lockfile": "uv lock",
-    "format": "uv run --locked ruff format .",
     "lint": "uv run --locked ruff check --fix .",
+    "format": "uv run --locked ruff format .",
 }
 
 
@@ -76,6 +82,12 @@ def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.presubmit",
         description=(__doc__ or "").split("\n\n")[0],
+        epilog="steps, in order:\n"
+        + "\n".join(
+            f"  {name}" + (f" (needs {PRODUCERS[name]})" if name in PRODUCERS else "")
+            for name in NAMES
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     choice = parser.add_mutually_exclusive_group()
     choice.add_argument(
@@ -88,9 +100,7 @@ def parser() -> argparse.ArgumentParser:
         nargs="+",
         choices=NAMES,
         metavar="STEP",
-        help=(
-            f"run only these steps and the steps they need; steps: {', '.join(NAMES)}"
-        ),
+        help="run only these steps and the steps they need",
     )
     return parser
 
@@ -113,7 +123,7 @@ def run_steps(
     run: Runner,
     *,
     clock: Callable[[], float] = time.monotonic,
-    out: IO[str] = sys.stdout,
+    out: IO[str],
 ) -> int:
     rows: list[tuple[str, str, float | None]] = []
     passed: set[str] = set()
@@ -144,25 +154,34 @@ def report(
     ok: bool,
     out: IO[str],
 ) -> None:
-    width = max(len("step"), *(len(name) for name, _, _ in rows))
-    status_width = max(len("status"), *(len(status) for _, status, _ in rows))
+    width = max([len("step"), *(len(name) for name, _, _ in rows)])
+    status_width = max([len("status"), *(len(status) for _, status, _ in rows)])
     print(file=out)
     print(f"{'step':<{width}}  {'status':<{status_width}}  seconds", file=out)
     for name, status, seconds in rows:
         shown = "-" if seconds is None else f"{seconds:.1f}"
         print(f"{name:<{width}}  {status:<{status_width}}  {shown:>7}", file=out)
     for name in failed:
-        print(f"rerun: {RERUN} {name}", file=out)
-        if name in FIXES:
-            print(f"fix: {FIXES[name]}", file=out)
+        print(f"rerun: {rerun(name)}", file=out)
+    for name, fix in FIXES.items():
+        if name in failed:
+            print(f"fix: {fix}", file=out)
     if ok:
         print("presubmit passed", file=out)
     else:
         print(f"presubmit failed: {', '.join(failed)}", file=out)
 
 
+def rerun(name: str) -> str:
+    return RERUN.format("--frozen" if name == "lockfile" else "--locked", name)
+
+
 def run_command(command: Sequence[str]) -> int:
-    return subprocess.run(command, check=False).returncode
+    try:
+        return subprocess.run(command, check=False).returncode
+    except OSError as error:
+        print(f"cannot run {command[0]}: {error}", file=sys.stderr, flush=True)
+        return 127
 
 
 def main(
@@ -170,7 +189,7 @@ def main(
     run: Runner = run_command,
     *,
     clock: Callable[[], float] = time.monotonic,
-    out: IO[str] = sys.stdout,
+    out: IO[str] | None = None,
 ) -> int:
     args = parser().parse_args(argv)
     names = select(args.only, args.fast)
@@ -178,7 +197,7 @@ def main(
         plan = [
             step for step in steps(sys.executable, Path(workdir)) if step[0] in names
         ]
-        return run_steps(plan, run, clock=clock, out=out)
+        return run_steps(plan, run, clock=clock, out=out or sys.stdout)
 
 
 if __name__ == "__main__":

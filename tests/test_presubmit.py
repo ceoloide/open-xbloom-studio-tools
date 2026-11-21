@@ -1,12 +1,32 @@
 import contextlib
 import io
 import itertools
+import os
+import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import tests  # noqa: F401 - installs the test guards
 from scripts import presubmit
+
+REPO = Path(__file__).resolve().parents[1]
+STEP_LIST = """
+steps, in order:
+  lockfile
+  format
+  lint
+  types
+  publication
+  tests
+  coverage-report (needs tests)
+  coverage-gate (needs coverage-report)
+  build
+  distribution (needs build)
+"""
 
 
 def fake(failing=()):
@@ -112,10 +132,14 @@ class ParserTest(unittest.TestCase):
         for name in presubmit.NAMES:
             self.assertIn(name, err)
 
-    def test_help_lists_the_step_names(self):
-        text = presubmit.parser().format_help()
-        for name in presubmit.NAMES:
-            self.assertIn(name, text)
+    def test_help_lists_one_step_per_line_at_any_width(self):
+        for columns in ("40", "72", "140"):
+            with self.subTest(columns=columns):
+                with mock.patch.dict(os.environ, {"COLUMNS": columns}):
+                    text = presubmit.parser().format_help()
+                self.assertTrue(text.endswith(STEP_LIST), text)
+                for name in presubmit.NAMES:
+                    self.assertRegex(text, rf"(?m)^  {re.escape(name)}( \(|$)")
 
 
 class RunTest(unittest.TestCase):
@@ -140,8 +164,8 @@ class RunTest(unittest.TestCase):
         self.assertRegex(out, r"\nlint +passed +0\.5\n")
         self.assertIn(
             "rerun: uv run --locked python -m scripts.presubmit --only format\n"
-            "fix: uv run --locked ruff format .\n"
-            "rerun: uv run --locked python -m scripts.presubmit --only types\n",
+            "rerun: uv run --locked python -m scripts.presubmit --only types\n"
+            "fix: uv run --locked ruff format .\n",
             out,
         )
         self.assertNotIn("fix: uv run --locked ruff check", out)
@@ -168,14 +192,49 @@ class RunTest(unittest.TestCase):
         self.assertNotIn("--only coverage", out)
         self.assertTrue(out.endswith("presubmit failed: tests\n"))
 
-    def test_fix_commands_for_lockfile_and_lint(self):
-        run, _ = fake(failing={"lock-cmd", "lint-cmd"})
+    def test_empty_plan_prints_an_empty_table(self):
+        code, out = self.run_plan([], fake()[0])
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "\nstep  status  seconds\npresubmit passed\n")
+
+    def test_failed_build_skips_distribution(self):
+        run, calls = fake(failing={"build-cmd"})
         code, out = self.run_plan(
-            [("lockfile", ["lock-cmd"]), ("lint", ["lint-cmd"])], run
+            [("build", ["build-cmd"]), ("distribution", ["dist-cmd"])], run
         )
         self.assertEqual(code, 1)
-        self.assertIn("--only lockfile\nfix: uv lock\n", out)
-        self.assertIn("--only lint\nfix: uv run --locked ruff check --fix .\n", out)
+        self.assertEqual(calls, ["build-cmd"])
+        self.assertRegex(out, r"\ndistribution +skipped \(needs build\) +-\n")
+        self.assertTrue(out.endswith("presubmit failed: build\n"))
+
+    def test_fixes_follow_the_reruns_lint_before_format(self):
+        run, _ = fake(failing={"lock-cmd", "format-cmd", "lint-cmd"})
+        plan = [
+            ("lockfile", ["lock-cmd"]),
+            ("format", ["format-cmd"]),
+            ("lint", ["lint-cmd"]),
+        ]
+        code, out = self.run_plan(plan, run)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "rerun: uv run --frozen python -m scripts.presubmit --only lockfile\n"
+            "rerun: uv run --locked python -m scripts.presubmit --only format\n"
+            "rerun: uv run --locked python -m scripts.presubmit --only lint\n"
+            "fix: uv lock\n"
+            "fix: uv run --locked ruff check --fix .\n"
+            "fix: uv run --locked ruff format .\n"
+            "presubmit failed: lockfile, format, lint\n",
+            out,
+        )
+
+    def test_only_the_lockfile_rerun_is_frozen(self):
+        # With a stale uv.lock, ``uv run --locked`` exits before presubmit runs.
+        for name in presubmit.NAMES:
+            flag = "--frozen" if name == "lockfile" else "--locked"
+            self.assertEqual(
+                presubmit.rerun(name),
+                f"uv run {flag} python -m scripts.presubmit --only {name}",
+            )
 
     def test_passing_run_prints_table_and_passes(self):
         run, _ = fake()
@@ -200,6 +259,12 @@ class MainTest(unittest.TestCase):
         self.assertEqual(len(calls), 10)
         self.assertTrue(out.endswith("presubmit passed\n"))
 
+    def test_main_fails_when_a_step_fails_and_prints_to_stdout(self):
+        run, _ = fake(failing={sys.executable})
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(presubmit.main(["--only", "lint"], run), 1)
+        self.assertTrue(out.getvalue().endswith("presubmit failed: lint\n"))
+
     def test_fast_lists_eight_steps(self):
         code, calls, out = self.main("--fast")
         self.assertEqual(code, 0)
@@ -215,6 +280,30 @@ class MainTest(unittest.TestCase):
     def test_run_command_returns_exit_status(self):
         code = "raise SystemExit(3)"
         self.assertEqual(presubmit.run_command([sys.executable, "-c", code]), 3)
+
+    def test_a_command_that_cannot_start_fails_its_step(self):
+        missing = str(REPO / "no-such-command")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(presubmit.run_command([missing]), 127)
+        self.assertIn(f"cannot run {missing}: ", err.getvalue())
+
+    def test_module_exits_1_when_a_step_fails(self):
+        # No ``uv`` on PATH, so the lockfile step cannot start.
+        with tempfile.TemporaryDirectory() as empty:
+            result = subprocess.run(
+                [sys.executable, "-m", "scripts.presubmit", "--only", "lockfile"],
+                cwd=REPO,
+                env={**os.environ, "PATH": empty},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        self.assertEqual(result.returncode, 1, result)
+        self.assertRegex(result.stdout, r"\nlockfile +failed \(exit 127\) ")
+        self.assertIn(
+            "--frozen python -m scripts.presubmit --only lockfile", result.stdout
+        )
+        self.assertIn("cannot run uv: ", result.stderr)
 
 
 if __name__ == "__main__":

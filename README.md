@@ -259,8 +259,10 @@ uv run --locked python -m scripts.presubmit
 A failing step does not stop the run. It ends with a table of every step,
 and for each failure a command that reruns only that step (with the steps it
 needs) and, for the lockfile, format and lint steps, the command that fixes
-it. `--fast` skips the build and distribution checks; `--only STEP ...` runs
-the named steps; `--help` lists the step names.
+it. The lockfile step's rerun command uses `uv run --frozen`, because with a
+stale lockfile `uv run --locked` stops before presubmit starts. `--fast` skips
+the build and distribution checks; `--only STEP ...` runs the named steps;
+`--help` lists the step names.
 
 ```sh
 uv run --locked python -m scripts.presubmit --fast
