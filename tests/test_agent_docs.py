@@ -14,6 +14,7 @@ from pathlib import Path
 
 import tests  # noqa: F401 - installs the test guards
 from scripts import presubmit, run_tests, testroot
+from tests.test_contracts import UPDATE
 from xbloom_studio import cli
 
 REPO = Path(__file__).resolve().parents[1]
@@ -30,7 +31,7 @@ PATH = re.compile(r"[\w.:-]+(?:/[\w.:-]+)*/?")
 SUFFIX = re.compile(r"\.(?:json|lock|md|py|toml|yml)")
 LINE_NUMBER = re.compile(r":\d+(?:-\d+)?$")
 ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)")
-VARIABLES = {"UV_PROJECT_ENVIRONMENT", testroot.TMPBASE}
+VARIABLES = {"UV_PROJECT_ENVIRONMENT", "UPDATE_CONTRACTS", testroot.TMPBASE}
 TMPBASE_BYTES = 26
 PYTHONS = {"3.10", "3.11", "3.12", "3.13", "3.14"}
 UNKNOWN = "not a known command"
@@ -45,6 +46,7 @@ REQUIRED_COMMANDS = {
     " python -m scripts.presubmit --fast",
     "uv run --locked python -m tests.child xbloom_studio"
     " --connector simulator --direct machine state",
+    UPDATE,
     *presubmit.FIXES.values(),
 }
 
