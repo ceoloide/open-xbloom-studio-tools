@@ -224,8 +224,10 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
             "print(ssh.pid, flush=True)\n"
             "time.sleep(60)\n"
         )
-        # Parent killed once the fake is armed; a parent other than expected.
-        for expected in ("", "1"):
+        # Its parent killed once it is armed; started by a parent other than
+        # the one it expects (this process is never its parent, nor its
+        # reaper once orphaned), it exits while that parent still lives.
+        for expected in ("", str(os.getpid())):
             with self.subTest(expected=expected or "its parent"):
                 armed.write_text("")
                 parent = subprocess.Popen(
@@ -236,6 +238,9 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.addCleanup(parent.kill)
                 pid = int(parent.stdout.readline())
+                if expected:
+                    self.assertTrue(await exited(pid))
+                    self.assertIsNone(parent.poll())
                 for _ in range(1000 if not expected else 0):
                     if armed.read_text() == f"{pid} ssh\n":
                         break
