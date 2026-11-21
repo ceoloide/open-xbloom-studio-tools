@@ -246,6 +246,10 @@ permission before any physical action and never retry an uncertain start.
 
 ## Development
 
+Coding agents, and people, start with [AGENTS.md](AGENTS.md): the commands
+that validate a change, the rules the checks enforce and a map from each
+module to its tests.
+
 The repository uses [uv](https://docs.astral.sh/uv/) with a committed
 lockfile. One command runs every check that CI runs: formatting, lint, strict
 typing, the publication policy, the offline tests with coverage gates, and the
