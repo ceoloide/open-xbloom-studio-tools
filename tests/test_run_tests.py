@@ -241,6 +241,19 @@ class RunTests(RepoCase):
             [("kill", 100001, signal.SIGUSR1), ("killpg", 100001, signal.SIGKILL)],
         )
 
+    def test_waiting_wakes_up_to_run_signal_handlers(self):
+        class Slow:
+            calls = []
+
+            def get(self, timeout=None):
+                self.calls.append(timeout)
+                if len(self.calls) < 3:
+                    raise run_tests.queue.Empty
+                return "item"
+
+        self.assertEqual(run_tests.take(Slow()), "item")
+        self.assertEqual(Slow.calls, [run_tests.POLL] * 3)
+
     def test_signals_to_a_finished_process_are_ignored(self):
         def gone(pid, signum):
             raise ProcessLookupError(pid)
@@ -361,15 +374,31 @@ class RunTests(RepoCase):
                 self.assertIs(signal.getsignal(signum), before)
 
     def test_interrupt_without_a_removable_root_says_so(self):
-        def interrupt(process):
-            os.kill(os.getpid(), signal.SIGTERM)
+        def interrupt(process, sent=[]):  # noqa: B006
+            if not sent:
+                sent.append(True)
+                os.kill(os.getpid(), signal.SIGTERM)
 
         real = run_tests.shutil.rmtree
+        fake = Fake({"tests.test_a": ("", 0, "block")}, on_wait=interrupt)
         with mock.patch.object(run_tests.shutil, "rmtree"):
-            code, output = self.main(Fake(on_wait=interrupt))
+            code, output = self.main(fake)
         self.addCleanup(real, run_root(output))
         self.assertEqual(code, 143)
         self.assertIn(f"run root not removed: {run_root(output)}\n", output)
+
+    def test_interrupt_during_cleanup_still_interrupts(self):
+        real = run_tests.shutil.rmtree
+
+        def rmtree(path, **options):
+            real(path, **options)
+            os.kill(os.getpid(), signal.SIGINT)
+
+        with mock.patch.object(run_tests.shutil, "rmtree", rmtree):
+            code, output = self.main(Fake())
+        self.assertEqual(code, 130)
+        self.assertEqual(output.count("\nok "), 3)
+        self.assertFalse(run_root(output).exists())
 
     def test_no_test_modules_is_a_usage_error(self):
         for path in (self.repo / "tests").glob("test_*.py"):
@@ -663,7 +692,7 @@ def gone(pid):
     """Whether ``pid`` has exited (a zombie counts)."""
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # gone while reading
         return True
     return state in ("Z", "X")
 

@@ -33,7 +33,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import IO, Protocol
+from typing import IO, Protocol, TypeVar
 
 from scripts import testroot
 
@@ -41,6 +41,7 @@ REPO = Path(__file__).resolve().parents[1]
 TIMEOUT = 300.0
 GRACE = 2.0
 JOIN = 10.0
+POLL = 0.2
 NOISE_SHOWN = 20
 RERUN = "uv run --locked python -m scripts.run_tests"
 WARNINGS = ["-W", "default", "-W", "error::ResourceWarning"]
@@ -61,6 +62,7 @@ class Process(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
 
+T = TypeVar("T")
 Spawn = Callable[[Sequence[str], Mapping[str, str], IO[bytes]], Process]
 Signal = Callable[[int, int], None]
 
@@ -310,15 +312,17 @@ def execute(
 ) -> list[Outcome]:
     """Run every module of ``plan``; print a line as each one finishes.
 
-    Each of ``signals`` stops a run still in progress with ``Interrupted``,
-    after the workers are killed and the run root is removed. A root that
-    cannot be removed is added to ``problems``.
+    Each of ``signals`` stops the run with ``Interrupted``, after the
+    workers are killed and the run root is removed. A root that cannot be
+    removed is added to ``problems``.
     """
     done: queue.SimpleQueue[Outcome | BaseException | None] = queue.SimpleQueue()
+    received: list[int] = []
 
     def interrupt(signum: int, frame: FrameType | None) -> None:
         # Raising here could abort startup or cleanup at any point, so the
         # main loop raises it instead. SimpleQueue.put is reentrant.
+        received.append(signum)
         done.put(Interrupted(signum))
 
     previous = {signum: signal.signal(signum, interrupt) for signum in signals}
@@ -365,7 +369,7 @@ def execute(
             threads.append(thread)
         finished = 0
         while finished < workers:
-            item = done.get()
+            item = take(done)
             if item is None:
                 finished += 1
             elif isinstance(item, BaseException):
@@ -385,7 +389,23 @@ def execute(
         finally:
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
+    if received:  # handled after the last worker had finished
+        raise Interrupted(received[0])
     return outcomes
+
+
+def take(done: queue.SimpleQueue[T]) -> T:
+    """The next item of ``done``.
+
+    The kernel may hand a process-directed signal to a worker thread, and
+    Python runs the handler only once the main thread wakes up, so wake up
+    every ``POLL`` seconds.
+    """
+    while True:
+        try:
+            return done.get(timeout=POLL)
+        except queue.Empty:
+            pass
 
 
 def remove(root: Path) -> bool:
