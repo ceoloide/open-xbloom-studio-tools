@@ -19,14 +19,16 @@ from xbloom_studio import cli
 REPO = Path(__file__).resolve().parents[1]
 DOC = REPO / "AGENTS.md"
 MAX_LINES = 150
-# Any fence a Markdown reader would see; only an exact ```sh block is allowed.
-FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")
+# Any fence a Markdown reader would see, also in a blockquote; only an exact
+# ```sh block at column 0 is allowed.
+FENCE = re.compile(r"[ \t>]*(`{3,}|~{3,})(.*)")
 CITED = re.compile(r"`([^`\s]+)`")
-LINK = re.compile(r"\]\(([^)\s]+)\)")
+# A link's destination, bare or in <>, and its optional title.
+LINK = re.compile(r"\]\(\s*(?:<([^>]*)>|([^)\s]+))(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)")
 MODULE = re.compile(r"(?:xbloom_studio|scripts|tests)(?:\.\w+)+")
-PATH = re.compile(r"[\w.-]+(?:/[\w.-]+)*/?")
+PATH = re.compile(r"[\w.:-]+(?:/[\w.:-]+)*/?")
 SUFFIX = re.compile(r"\.(?:json|lock|md|py|toml|yml)")
-LINE_NUMBER = re.compile(r"(?::\d+)+")
+LINE_NUMBER = re.compile(r":\d+(?:-\d+)?$")
 ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)")
 VARIABLES = {"UV_PROJECT_ENVIRONMENT", testroot.TMPBASE}
 TMPBASE_BYTES = 26
@@ -66,7 +68,7 @@ def check(text: str, mapped: Sequence[str] | None = None) -> list[str]:
                 problems.append(f"no such module or test: {name}")
         elif is_path(name) and not exists(LINE_NUMBER.sub("", name)):
             problems.append(f"no such path: {name}")
-    for target in LINK.findall(text):
+    for target in (angled or bare for angled, bare in LINK.findall(text)):
         if not re.match(r"[a-z]+:|#", target) and not exists(target.split("#")[0]):
             problems.append(f"no such link target: {target}")
     in_map = set(CITED.findall("\n".join(map_rows(text))))
@@ -116,7 +118,7 @@ def split(line: str) -> list[str]:
     # As in sh, only an unquoted '#' that starts a word begins a comment;
     # shlex's comment mode would also cut "--fast#typo" down to "--fast".
     # The comment is cut before parsing, so a quote inside it is never parsed.
-    quote, escaped = None, False
+    quote, escaped, word_start = None, False, True
     for index, char in enumerate(line):
         if escaped:
             escaped = False
@@ -126,8 +128,12 @@ def split(line: str) -> list[str]:
             quote = None if char == quote else quote
         elif char in "'\"":
             quote = char
-        elif char == "#" and (index == 0 or line[index - 1].isspace()):
+        elif char.isspace():
+            word_start = True
+            continue
+        elif char == "#" and word_start:
             return shlex.split(line[:index])
+        word_start = False
     return shlex.split(line)
 
 
@@ -189,6 +195,8 @@ def targets(args: list[str], *, runner: bool) -> str | None:
     elif not args:
         return "names no test"
     for name in args:
+        if not name:
+            return "empty test name"
         loader = unittest.TestLoader()
         try:
             suite = loader.loadTestsFromName(name)
@@ -220,7 +228,6 @@ def resolves(name: str) -> bool:
 
 def is_path(name: str) -> bool:
     """Whether a cited name is meant as a repository path."""
-    name = LINE_NUMBER.sub("", name)
     return bool(
         PATH.fullmatch(name)
         and ("/" in name or name.startswith(".") or SUFFIX.search(name))
@@ -228,6 +235,8 @@ def is_path(name: str) -> bool:
 
 
 def exists(name: str) -> bool:
+    if Path(name).is_absolute():
+        return False
     path = REPO / name
     return path.is_dir() if name.endswith("/") else path.exists()
 
@@ -267,8 +276,9 @@ MAPPED = ["xbloom_studio.cli", "tests.test_cli"]
 FIXTURE = """# Guide
 
 See `docs/diagnostics.md`, `.gitignore`, `scripts/`, `tests/test_cli.py:12`,
-[the catalog](docs/diagnostics.md#top), [uv](https://docs.astral.sh/uv/) and
-`tests.test_cli.PureCommandTests`.
+`tests/test_cli.py:12-20`, [the catalog](docs/diagnostics.md#top),
+[a title](docs/diagnostics.md "Catalog"), [angled](<docs/diagnostics.md>),
+[uv](https://docs.astral.sh/uv/) and `tests.test_cli.PureCommandTests`.
 
 ```sh
 uv run --locked python -m scripts.presubmit --fast  # comment
@@ -300,6 +310,8 @@ class CheckerTests(unittest.TestCase):
             "docs/diagnostics.md/",
             "scriptz/",
             "tests/test_nope.py:12",
+            "tests/test_nope.py:12-20",
+            "docs:1/diagnostics.md",
         ):
             with self.subTest(cited=cited):
                 self.assertEqual(
@@ -312,10 +324,18 @@ class CheckerTests(unittest.TestCase):
                     problems_with(FIXTURE + f"See `{cited}`.\n"),
                     [f"no such module or test: {cited}"],
                 )
-        for target in ("docs/missing.md", "docs/missing.md#top", "scriptz/"):
-            with self.subTest(link=target):
+        for link, target in (
+            ("docs/missing.md", "docs/missing.md"),
+            ("docs/missing.md#top", "docs/missing.md#top"),
+            ("scriptz/", "scriptz/"),
+            ('docs/missing.md "Guide"', "docs/missing.md"),
+            ("docs/missing.md 'Guide'", "docs/missing.md"),
+            ("<docs/missing.md>", "docs/missing.md"),
+            ("/tmp", "/tmp"),
+        ):
+            with self.subTest(link=link):
                 self.assertEqual(
-                    problems_with(FIXTURE + f"See [this]({target}).\n"),
+                    problems_with(FIXTURE + f"See [this]({link}).\n"),
                     [f"no such link target: {target}"],
                 )
 
@@ -336,12 +356,23 @@ class CheckerTests(unittest.TestCase):
             "python -m scripts.run_tests tests.test_cli tests.test_cli.Nope": (
                 "does not load: tests.test_cli.Nope"
             ),
+            "python -m scripts.run_tests tests.test_cli.Nope tests.test_cli": (
+                "does not load: tests.test_cli.Nope"
+            ),
             "python -m scripts.run_tests tests.test_cli.CliCase": "has no tests",
+            "python -m scripts.run_tests --coverage-data a\\ #b bogus": (
+                "no test module for 'bogus'"
+            ),
             "python -m unittest tests.test_cli.Nope": "does not load",
             "python -m unittest tests.test_cli tests.test_cli.Nope": (
                 "does not load: tests.test_cli.Nope"
             ),
+            "python -m unittest tests.test_cli.Nope tests.test_cli": (
+                "does not load: tests.test_cli.Nope"
+            ),
             "python -m unittest tests.test_cli.CliCase": "has no tests",
+            "python -m unittest ''": "empty test name",
+            "python -m unittest tests.test_cli ''": "empty test name",
             "python -m unittest tests.test_cli.REPO": "does not load",
             "python -m unittest tests.test_cli.CliCase.run.__name__": "not a test",
             "python -m unittest": "names no test",
@@ -357,6 +388,10 @@ class CheckerTests(unittest.TestCase):
                 "unexpected variable XBLOOM_STUDIO_TEST_ROOT"
             ),
             f"{testroot.TMPBASE}=/tmp/{'x' * 22} python -m scripts.presubmit": (
+                "longer than 26 bytes"
+            ),
+            # 16 characters, 27 bytes.
+            f"{testroot.TMPBASE}=/tmp/{'é' * 11} python -m scripts.presubmit": (
                 "longer than 26 bytes"
             ),
             "UV_PROJECT_ENVIRONMENT=.venv-310": UNKNOWN,
@@ -395,6 +430,8 @@ class CheckerTests(unittest.TestCase):
             "python -m unittest tests.test_cli # x",
             "python -m scripts.presubmit --fast # the runner's inner loop",
             "python -m scripts.presubmit --fast #runner's inner loop",
+            "python -m scripts.run_tests --coverage-data a\\ #b tests.test_cli",
+            "python -m scripts.presubmit\t# a tab before the comment",
             "python -m unittest 'tests.test_cli' # '#' \"#\"",
         )
         self.assertEqual(problems_with(text), [])
@@ -409,6 +446,9 @@ class CheckerTests(unittest.TestCase):
             "  ```sh",
             "~~~sh",
             "````sh",
+            "> ```sh",
+            ">```sh",
+            " > ```sh",
         ):
             with self.subTest(opener=opener):
                 closer = FENCE.fullmatch(opener)[1]
@@ -444,12 +484,9 @@ class CheckerTests(unittest.TestCase):
                 )
 
     def test_line_cap(self):
-        at_cap = FIXTURE + "x\n" * (MAX_LINES - FIXTURE.count("\n"))
+        at_cap = FIXTURE + "x\n" * (150 - FIXTURE.count("\n"))
         self.assertEqual(problems_with(at_cap), [])
-        self.assertEqual(
-            problems_with(at_cap + "x\n"),
-            [f"{MAX_LINES + 1} lines; at most {MAX_LINES}"],
-        )
+        self.assertEqual(problems_with(at_cap + "x\n"), ["151 lines; at most 150"])
 
 
 class AgentsFileTests(unittest.TestCase):

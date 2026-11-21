@@ -63,11 +63,11 @@ rerun line uses `uv run --frozen`, because with a stale lockfile
 most `--jobs` at once (default min(4, CPUs)). A module's result is `ok`,
 `FAIL`, `EMPTY` (no tests ran), `NOISE` (a line that is not unittest's own) or
 `TIMEOUT` (300 s; it dumps every thread's stack, then kills the module's
-process group). A failing run ends with a `rerun:` line: the failed test IDs
-where it can read them, else the module. Known limits: a descendant that
-starts its own session survives the kill; if the runner itself dies by
-SIGKILL, SIGHUP or SIGQUIT, its workers and run root (`xbs-r-*` under /dev/shm
-or /tmp) stay behind, so kill and delete them.
+process group). When a module fails, the runner prints a `rerun:` line: the
+failed test IDs where it can read them, else the module. Known limits: a
+descendant that starts its own session survives the kill; if the runner itself
+dies by SIGKILL, SIGHUP or SIGQUIT, its workers and run root (`xbs-r-*` under
+/dev/shm or /tmp) stay behind, so kill and delete them.
 
 Known rare flake: `tests.test_control.ReviewRegressionTests.test_grinder_pulse_is_budgeted_from_the_start_frame`
 can fail under heavy load. Rerun it before chasing it.
