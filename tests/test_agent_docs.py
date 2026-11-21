@@ -113,18 +113,22 @@ def commands(text: str) -> list[str]:
 
 
 def split(line: str) -> list[str]:
-    # Only a word that starts with '#' begins a comment, as in sh; shlex's
-    # comment mode would also cut "--fast#typo" down to "--fast". Words are
-    # read lazily, so a quote inside the comment is never parsed.
-    lexer = shlex.shlex(line, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    words = []
-    for word in lexer:
-        if word.startswith("#"):
-            break
-        words.append(word)
-    return words
+    # As in sh, only an unquoted '#' that starts a word begins a comment;
+    # shlex's comment mode would also cut "--fast#typo" down to "--fast".
+    # The comment is cut before parsing, so a quote inside it is never parsed.
+    quote, escaped = None, False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1].isspace()):
+            return shlex.split(line[:index])
+    return shlex.split(line)
 
 
 def check_command(line: str) -> str | None:
@@ -319,6 +323,10 @@ class CheckerTests(unittest.TestCase):
         cases = {
             "uv run --locked python -m scripts.presubmit --nope": "--nope",
             "uv run --locked python -m scripts.presubmit --fast#typo": "--fast#typo",
+            "python -m scripts.presubmit '#fast'": "#fast",
+            'python -m scripts.presubmit "x #fast"': "x #fast",
+            "python -m scripts.presubmit \\#fast": "#fast",
+            'python -m scripts.presubmit "a\\" #b"': 'a" #b',
             "uv run --locked python -m scripts.presubmit --only nope": "'nope'",
             "python -m scripts.presubmit --fast --only lint": "--fast",
             "python -m scripts.presubmit --help": "exits 0 without running",
@@ -360,7 +368,7 @@ class CheckerTests(unittest.TestCase):
                 problems = problems_with(FIXTURE + fence(line))
                 self.assertEqual(len(problems), 1, problems)
                 self.assertTrue(problems[0].startswith(f"{line}: "), problems)
-                self.assertIn(expected, problems[0])
+                self.assertIn(expected, problems[0][len(line) + 2 :])
 
     def test_accepted_prefixes(self):
         lines = (
@@ -386,6 +394,8 @@ class CheckerTests(unittest.TestCase):
             "  ",
             "python -m unittest tests.test_cli # x",
             "python -m scripts.presubmit --fast # the runner's inner loop",
+            "python -m scripts.presubmit --fast #runner's inner loop",
+            "python -m unittest 'tests.test_cli' # '#' \"#\"",
         )
         self.assertEqual(problems_with(text), [])
 
