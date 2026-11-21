@@ -15,7 +15,7 @@ killed with a signal it cannot catch (SIGKILL) or does not handle (such as
 SIGHUP or SIGQUIT), its workers and run root are left behind. A worker's root
 is exactly as long as the root of a bare ``python -m unittest`` run, so a long
 ``XBLOOM_STUDIO_TEST_TMPBASE`` that breaks socket paths here breaks them there
-too (about 48 bytes is the most the socket tests allow).
+too: the socket tests allow a base of at most 26 bytes.
 """
 
 from __future__ import annotations
