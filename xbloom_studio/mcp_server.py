@@ -90,7 +90,7 @@ def _error(
     return {"error": payload}
 
 
-def create_server(  # noqa: C901 - one registration per tool
+def create_server(
     socket_path: str | Path | None = None,
     groups: Sequence[str] = GROUPS,
     caller: Caller | None = None,
@@ -346,7 +346,7 @@ Status = Literal[
 ]
 
 
-def _recipe_tools(tool: Tool, invoke: Invoke) -> None:  # noqa: C901
+def _recipe_tools(tool: Tool, invoke: Invoke) -> None:
     @tool
     async def recipe_examples(
         coffee: dict[str, Any], water_ml: float | None = None, limit: int = 5
@@ -655,7 +655,7 @@ def _history_tools(tool: Tool, invoke: Invoke) -> None:
         )
 
 
-def _machine_tools(  # noqa: C901
+def _machine_tools(
     tool: Tool, invoke: Invoke, compact_state: Callable[[Any], Any]
 ) -> None:
     @tool
