@@ -114,10 +114,17 @@ def commands(text: str) -> list[str]:
 
 def split(line: str) -> list[str]:
     # Only a word that starts with '#' begins a comment, as in sh; shlex's
-    # comment mode would also cut "--fast#typo" down to "--fast".
-    words = shlex.split(line)
-    hashes = [index for index, word in enumerate(words) if word.startswith("#")]
-    return words[: hashes[0]] if hashes else words
+    # comment mode would also cut "--fast#typo" down to "--fast". Words are
+    # read lazily, so a quote inside the comment is never parsed.
+    lexer = shlex.shlex(line, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    words = []
+    for word in lexer:
+        if word.startswith("#"):
+            break
+        words.append(word)
+    return words
 
 
 def check_command(line: str) -> str | None:
@@ -374,7 +381,11 @@ class CheckerTests(unittest.TestCase):
 
     def test_comments_and_blank_lines_are_not_commands(self):
         text = FIXTURE + fence(
-            "", "# a comment", "  ", "python -m unittest tests.test_cli # x"
+            "",
+            "# a comment",
+            "  ",
+            "python -m unittest tests.test_cli # x",
+            "python -m scripts.presubmit --fast # the runner's inner loop",
         )
         self.assertEqual(problems_with(text), [])
 
