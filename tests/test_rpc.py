@@ -77,6 +77,8 @@ class ErrorContractTests(unittest.TestCase):
 
     def test_known_errors_keep_guidance_and_never_invite_retry(self):
         report = {"valid": False, "errors": [{"path": "/x", "message": "bad"}]}
+        http_error = HTTPError("https://example.com", 404, "x", None, None)
+        self.addCleanup(http_error.close)
         cases = [
             (RecipeValidationError(report), "validation_error"),
             (
@@ -93,7 +95,7 @@ class ErrorContractTests(unittest.TestCase):
             (ConflictError("m"), "conflict"),
             (KeyError("Operation not found"), "not_found"),
             (ProviderError("m"), "provider_error"),
-            (HTTPError("https://example.com", 404, "x", None, None), "provider_error"),
+            (http_error, "provider_error"),
             (URLError("down"), "provider_unavailable"),
             (SessionError("m"), "connection_unavailable"),
             (FileExistsError("x"), "conflict"),

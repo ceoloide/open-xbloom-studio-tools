@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.frames import reply, u32
-from tests.machine import Machine, until
+from tests.machine import Machine, expect_shielded_failures, until
 from xbloom_studio.application import MachineService, RecordingConnector
 from xbloom_studio.client import SessionError
 from xbloom_studio.control import BusyError
@@ -2243,6 +2243,7 @@ class PresetRetryTests(ServiceCase):
         )
 
     async def test_a_cancellation_while_the_final_read_fails_is_committed(self):
+        expect_shielded_failures(self, 2)
         # Cancelled while the summary is read after the window closed; that
         # read then fails once. The cancellation is still durable before the
         # guard is released, and an observed save keeps its precedence.
@@ -2523,13 +2524,21 @@ class PresetRetryTests(ServiceCase):
         self.assertEqual(self.latest()["state"], "not_sent")
 
     async def test_a_cancellation_while_a_start_is_unverified_stays_cancelled(self):
+        expect_shielded_failures(self, 2)
         append, loop, started = self.store.append, asyncio.get_running_loop(), []
         tasks: list[asyncio.Task] = []
 
         def verify_fails(attempt_id):
-            # The caller cancels while the commit is checked; the check fails.
-            loop.call_soon_threadsafe(tasks[-1].cancel)
-            threading.Event().wait(0.05)
+            # The caller cancels while the commit is checked; the check fails
+            # only after the loop has delivered the cancellation.
+            cancelled = threading.Event()
+
+            def cancel():
+                tasks[-1].cancel()
+                loop.call_soon(cancelled.set)
+
+            loop.call_soon_threadsafe(cancel)
+            cancelled.wait(5)
             raise sqlite3.OperationalError("transient")
 
         # An unverifiable start that never committed first, then one that did.
@@ -2578,6 +2587,7 @@ class PresetRetryTests(ServiceCase):
         self.assertEqual(self.frames(), 0)
 
     async def test_late_cancellation_during_an_unverified_starts_failure_flush(self):
+        expect_shielded_failures(self, 1)
         append = self.store.append
         entered, release = threading.Event(), threading.Event()
 
@@ -2602,6 +2612,7 @@ class PresetRetryTests(ServiceCase):
             try:
                 await until(entered.is_set, 5)
                 task.cancel()
+                await asyncio.sleep(0)
             finally:
                 release.set()
             with self.assertRaises(asyncio.CancelledError):

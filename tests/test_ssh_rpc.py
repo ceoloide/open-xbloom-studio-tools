@@ -172,10 +172,21 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_closed_input_is_uncertain(self):
         self.mode("closed")
-        # Python 3.10 also logs its unretrieved stdin-closed future at ERROR.
-        logging.getLogger("asyncio").setLevel(logging.CRITICAL)
-        with self.assertRaisesRegex(ConnectionError, "connection closed"):
+        spawn, processes = asyncio.create_subprocess_exec, []
+
+        async def spawned(*args, **kwargs):
+            processes.append(await spawn(*args, **kwargs))
+            return processes[-1]
+
+        with (
+            patch.object(asyncio, "create_subprocess_exec", spawned),
+            self.assertRaisesRegex(ConnectionError, "connection closed"),
+        ):
             await ssh_call("host", "recipe_validate", {"document": "x" * 1_000_000})
+        # Python 3.10 never retrieves the stdin-closed error and logs it when
+        # the future is freed; retrieve it here.
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            await processes[0].stdin.wait_closed()
 
 
 class StdIO:

@@ -258,6 +258,8 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
         cmd_err = CommandValidationError(
             [{"path": "/params/level", "message": "out of range", "allowed": {}}]
         )
+        http_err = HTTPError("https://example.com", 502, "bad", None, None)
+        self.addCleanup(http_err.close)
         cases = [
             (recipe_err, "validation_error", "XB_RECIPE_VALIDATION"),
             (cmd_err, "validation_error", "XB_COMMAND_VALIDATION"),
@@ -313,11 +315,7 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
             (KeyError("Operation not found"), "not_found", "XB_OPERATION_NOT_FOUND"),
             (KeyError("Import not found"), "not_found", "XB_IMPORT_NOT_FOUND"),
             (ProviderError("bad"), "provider_error", "XB_PROVIDER_ERROR"),
-            (
-                HTTPError("https://example.com", 502, "bad", None, None),
-                "provider_error",
-                "XB_PROVIDER_ERROR",
-            ),
+            (http_err, "provider_error", "XB_PROVIDER_ERROR"),
             (URLError("offline"), "provider_unavailable", "XB_PROVIDER_UNAVAILABLE"),
             (
                 SessionError("dropped"),

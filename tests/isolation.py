@@ -6,12 +6,14 @@ points ``HOME``, the XDG directories, ``TMPDIR`` and ``tempfile`` at it, drops
 inherits the variable changes no environment, keeps the ``TMPDIR`` it was given
 and deletes nothing. Both replace ``pwd.getpwuid`` so
 the production lease resolver, which reads the account home rather than
-``HOME``, also lands inside the root.
+``HOME``, also lands inside the root, and both drop asyncio's load-dependent
+slow-callback warnings so a passing run prints only unittest's own lines.
 """
 
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import pwd
 import shutil
@@ -32,6 +34,10 @@ def _getpwuid(uid: int) -> pwd.struct_passwd:
     fields = list(entry)
     fields[5] = str(root / "home")
     return pwd.struct_passwd(fields)
+
+
+def _fast_enough(record: logging.LogRecord) -> bool:
+    return record.msg != "Executing %s took %.3f seconds"
 
 
 def _remove(path: Path, pid: int) -> None:
@@ -59,3 +65,4 @@ def install() -> None:
         owner = True
         atexit.register(_remove, root, os.getpid())
     pwd.getpwuid = _getpwuid
+    logging.getLogger("asyncio").addFilter(_fast_enough)
