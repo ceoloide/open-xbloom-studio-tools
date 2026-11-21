@@ -2529,9 +2529,16 @@ class PresetRetryTests(ServiceCase):
         tasks: list[asyncio.Task] = []
 
         def verify_fails(attempt_id):
-            # The caller cancels while the commit is checked; the check fails.
-            loop.call_soon_threadsafe(tasks[-1].cancel)
-            threading.Event().wait(0.05)
+            # The caller cancels while the commit is checked; the check fails
+            # only after the loop has delivered the cancellation.
+            cancelled = threading.Event()
+
+            def cancel():
+                tasks[-1].cancel()
+                loop.call_soon(cancelled.set)
+
+            loop.call_soon_threadsafe(cancel)
+            cancelled.wait(5)
             raise sqlite3.OperationalError("transient")
 
         # An unverifiable start that never committed first, then one that did.
