@@ -40,14 +40,14 @@ elif mode == "nonzero":
 elif mode == "stdout":
     sys.stdout.write("x" * 10000)
     sys.stdout.flush()
-    time.sleep(60)
+    time.sleep(10)
 elif mode == "hang":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    time.sleep(60)
+    time.sleep(10)
 elif mode == "descendant":
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
     (audit.parent / "descendant").write_text(str(child.pid))
-    time.sleep(60)
+    time.sleep(10)
 elif mode == "truncated":
     sys.stdout.write('{"ok":true,"data":1}')
 elif mode == "malformed":

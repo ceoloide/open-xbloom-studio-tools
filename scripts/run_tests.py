@@ -8,16 +8,23 @@ runs as one ``unittest`` child with a private root under one run root, which
 is deleted at the end. A module passes only if it exits 0, runs at least one
 test and prints nothing but unittest's own lines. This script never imports
 the tests: the module list comes from the file names.
+
+Limits: a timeout or an interrupt kills each worker's process group, so a
+descendant that starts its own session survives it. If the runner itself is
+killed with a signal it cannot catch (SIGKILL) or does not handle (such as
+SIGHUP or SIGQUIT), its workers and run root are left behind.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import queue
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -41,6 +48,11 @@ WARNINGS = ["-W", "default", "-W", "error::ResourceWarning"]
 RAN = re.compile(r"Ran (\d+) tests? in [0-9.]+s")
 OWN_LINE = re.compile(r"[.sxuFE]*|-{70}|Ran \d+ tests? in [0-9.]+s|OK( \(.*\))?")
 HEADER = re.compile(r"(?:FAIL|ERROR): (\S+) \(([^)\s]+)\)")
+SEPARATOR = "=" * 70
+# The suffix ``coverage run --parallel-mode`` gives its data files.
+SHARD = re.compile(r"\.[^.]+\.pid\d+\.X\w+x(\.H\w+h)?")
+# Workers must print plain text, or the output rule and ID parsing fail.
+COLORS = {"PYTHON_COLORS": "0", "NO_COLOR": "1"}
 
 
 class Process(Protocol):
@@ -173,21 +185,32 @@ def classify(outcome: Outcome, code: int | None) -> None:
 
 
 def failed_ids(outcome: Outcome) -> list[str]:
-    """Rerunnable IDs of the failed tests, or the module when they are unclear."""
-    if outcome.status != "FAIL":
+    """Rerunnable IDs of the failed tests, or the module when any is unclear."""
+    if outcome.status != "FAIL" or "unexpected successes=" in outcome.output:
         return [outcome.module]
     ids: list[str] = []
-    for line in outcome.output.splitlines():
-        match = HEADER.match(line)
-        if not match:
-            continue
-        name, where = match.groups()
-        found = where if where.endswith(f".{name}") else f"{where}.{name}"
-        if not (name.startswith("test") and found.startswith(f"{outcome.module}.")):
-            found = outcome.module
+    lines = outcome.output.splitlines()
+    for previous, line in zip(lines, lines[1:], strict=False):
+        if previous != SEPARATOR:
+            continue  # unittest puts the separator above every failure header
+        found = test_id(line, outcome.module)
+        if found is None:
+            return [outcome.module]
         if found not in ids:
             ids.append(found)
     return ids or [outcome.module]
+
+
+def test_id(header: str, module: str) -> str | None:
+    """``pkg.C.test_y`` from a 3.10 or a 3.11+ failure header in ``module``."""
+    match = HEADER.match(header)
+    if not match:
+        return None
+    name, where = match.groups()
+    found = where if where.endswith(f".{name}") else f"{where}.{name}"
+    if name.startswith("test") and found.startswith(f"{module}."):
+        return found
+    return None
 
 
 def quietly(send: Signal, pid: int, signum: int) -> None:
@@ -228,12 +251,15 @@ class Pool:
         self.stopping = threading.Event()
         self.live: set[int] = set()
 
-    def run(self, module: str, targets: Sequence[str]) -> Outcome:
-        outcome = Outcome(module, self.run_root / module)
+    def run(self, name: str, module: str, targets: Sequence[str]) -> Outcome:
+        # A short name keeps socket paths under the root within AF_UNIX limits.
+        outcome = Outcome(module, self.run_root / name)
         outcome.root.mkdir(mode=0o700)
         env = dict(self.environ)
         testroot.apply(env, outcome.root)
-        log = self.run_root / f"{module}.log"
+        env.pop("FORCE_COLOR", None)
+        env.update(COLORS)
+        log = self.run_root / f"{name}.log"
         started = self.clock()
         with log.open("wb") as output:
             with self.lock:
@@ -250,8 +276,9 @@ class Pool:
                 self.stopping.wait(self.grace)
                 quietly(self.killpg, process.pid, signal.SIGKILL)
                 process.wait()
-            with self.lock:
-                self.live.discard(process.pid)
+            finally:
+                with self.lock:
+                    self.live.discard(process.pid)
         outcome.seconds = self.clock() - started
         outcome.output = log.read_text("utf-8", errors="replace")
         classify(outcome, code)
@@ -269,6 +296,7 @@ def execute(
     *,
     jobs: int,
     out: IO[str],
+    problems: list[str] | None = None,
     coverage: Path | None = None,
     environ: Mapping[str, str] = os.environ,
     spawn: Spawn = spawn,
@@ -278,11 +306,26 @@ def execute(
     timeout: float = TIMEOUT,
     grace: float = GRACE,
     build: Callable[[Sequence[str], Path | None], list[str]] = command,
+    signals: Sequence[int] = (),
 ) -> list[Outcome]:
-    """Run every module of ``plan``; print a line as each one finishes."""
+    """Run every module of ``plan``; print a line as each one finishes.
+
+    Each of ``signals`` stops a run still in progress with ``Interrupted``,
+    after the workers are killed and the run root is removed. A root that
+    cannot be removed is added to ``problems``.
+    """
+    done: queue.SimpleQueue[Outcome | BaseException | None] = queue.SimpleQueue()
+
+    def interrupt(signum: int, frame: FrameType | None) -> None:
+        # Raising here could abort startup or cleanup at any point, so the
+        # main loop raises it instead. SimpleQueue.put is reentrant.
+        done.put(Interrupted(signum))
+
+    previous = {signum: signal.signal(signum, interrupt) for signum in signals}
     run_root: Path | None = None
     pool: Pool | None = None
     threads: list[threading.Thread] = []
+    outcomes: list[Outcome] = []
     try:
         run_root = testroot.create(environ, prefix="xbs-run-")
         pool = Pool(
@@ -299,28 +342,27 @@ def execute(
         )
         workers = min(jobs, len(plan))
         print(f"{len(plan)} modules, {workers} jobs, root {run_root}", file=out)
-        todo: queue.SimpleQueue[tuple[str, Sequence[str]]] = queue.SimpleQueue()
-        for module, targets in plan.items():
-            todo.put((module, targets))
-        done: queue.SimpleQueue[Outcome | BaseException | None] = queue.SimpleQueue()
+        todo: queue.SimpleQueue[tuple[str, str, Sequence[str]]] = queue.SimpleQueue()
+        for index, (module, targets) in enumerate(plan.items()):
+            todo.put((str(index), module, targets))
 
         def work(pool: Pool) -> None:
             try:
                 while True:
                     try:
-                        module, targets = todo.get_nowait()
+                        name, module, targets = todo.get_nowait()
                     except queue.Empty:
                         break
-                    done.put(pool.run(module, targets))
+                    done.put(pool.run(name, module, targets))
             except BaseException as error:  # raised again by the main thread
                 done.put(error)
             finally:
                 done.put(None)
 
         for _ in range(workers):
-            threads.append(threading.Thread(target=work, args=(pool,), daemon=True))
-            threads[-1].start()
-        outcomes: list[Outcome] = []
+            thread = threading.Thread(target=work, args=(pool,), daemon=True)
+            thread.start()
+            threads.append(thread)
         finished = 0
         while finished < workers:
             item = done.get()
@@ -331,15 +373,36 @@ def execute(
             else:
                 outcomes.append(item)
                 print(line(item), file=out, flush=True)
-        return outcomes
     finally:
-        if pool is not None:
-            pool.stop()
-        # A worker still starting a module could add to the root while it goes.
-        for thread in threads:
-            thread.join(JOIN)
-        if run_root is not None:
-            shutil.rmtree(run_root, ignore_errors=True)
+        try:
+            if pool is not None:
+                pool.stop()
+            # A worker still starting a module could add to the root while it goes.
+            for thread in threads:
+                thread.join(JOIN)
+            if run_root is not None and not remove(run_root) and problems is not None:
+                problems.append(f"run root not removed: {run_root}")
+        finally:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
+    return outcomes
+
+
+def remove(root: Path) -> bool:
+    """Delete ``root``, making its directories writable if needed."""
+    shutil.rmtree(root, ignore_errors=True)
+    if not os.path.lexists(root):
+        return True
+    with contextlib.suppress(OSError):
+        os.chmod(root, stat.S_IRWXU)
+    for parent, directories, _ in os.walk(root):
+        for directory in directories:
+            path = os.path.join(parent, directory)
+            if not os.path.islink(path):  # never change what a link points at
+                with contextlib.suppress(OSError):
+                    os.chmod(path, stat.S_IRWXU)
+    shutil.rmtree(root, ignore_errors=True)
+    return not os.path.lexists(root)
 
 
 def line(outcome: Outcome) -> str:
@@ -363,7 +426,19 @@ def details(outcome: Outcome) -> Iterator[str]:
 
 
 def shards(coverage: Path) -> list[Path]:
-    return sorted(coverage.parent.glob(f"{coverage.name}.*"))
+    """The regular files ``coverage run --parallel-mode`` wrote for ``coverage``."""
+    prefix = coverage.name
+    try:
+        entries = list(os.scandir(coverage.parent))
+    except FileNotFoundError:
+        return []
+    return sorted(
+        Path(entry.path)
+        for entry in entries
+        if entry.name.startswith(prefix)
+        and SHARD.fullmatch(entry.name[len(prefix) :])
+        and entry.is_file(follow_symlinks=False)
+    )
 
 
 def combine(coverage: Path) -> list[str]:
@@ -374,10 +449,13 @@ def combine(coverage: Path) -> list[str]:
     argv = [sys.executable, "-m", "coverage", "combine", "--quiet"]
     argv += [f"--data-file={coverage}", *map(str, found)]
     result = subprocess.run(argv, cwd=REPO, capture_output=True, text=True, check=False)
-    if result.returncode:
+    # combine deletes each shard it used; one left over was skipped.
+    skipped = [path for path in found if os.path.lexists(path)]
+    if result.returncode or skipped:
         return [
             f"coverage: combine exited {result.returncode}",
-            result.stdout + result.stderr,
+            *(f"coverage: not combined: {path}" for path in skipped),
+            (result.stdout + result.stderr).rstrip("\n"),
         ]
     return []
 
@@ -422,43 +500,38 @@ def main(
         plan = group(args.targets, modules(repo))
     except ValueError as error:
         usage.error(str(error))
+    if not plan:
+        usage.error(f"no test modules match {repo / 'tests' / 'test_*.py'}")
     coverage: Path | None = args.coverage_data
     if coverage is not None:
-        coverage = coverage.resolve()
+        # Absolute, but a final symlink is replaced, never followed.
+        coverage = coverage.absolute()
+        if coverage.is_dir() and not coverage.is_symlink():
+            usage.error(f"--coverage-data is a directory: {coverage}")
         for stale in [coverage, *shards(coverage)]:
             stale.unlink(missing_ok=True)
-
-    def interrupt(signum: int, frame: FrameType | None) -> None:
-        # Once is enough: cleanup must not be interrupted by a second signal.
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        raise Interrupted(signum)
-
-    previous = {
-        signum: signal.signal(signum, interrupt)
-        for signum in (signal.SIGINT, signal.SIGTERM)
-    }
+    problems: list[str] = []
     started = clock()
     try:
         outcomes = execute(
             plan,
             jobs=args.jobs,
             out=out,
+            problems=problems,
             coverage=coverage,
             spawn=spawn,
             kill=kill,
             killpg=killpg,
             clock=clock,
+            signals=(signal.SIGINT, signal.SIGTERM),
         )
     except Interrupted as error:
-        print(f"interrupted by {error}; workers killed, run root removed", file=out)
+        print(f"interrupted by {error}; workers killed", file=out)
+        for problem in problems:
+            print(problem, file=out)
         return 128 + error.signum
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
-    problems = []
     if coverage is not None:
-        problems = combine(coverage)
+        problems += combine(coverage)
     return 0 if report(outcomes, clock() - started, problems, out) else 1
 
 

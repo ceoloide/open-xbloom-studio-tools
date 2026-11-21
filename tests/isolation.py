@@ -15,6 +15,7 @@ module that hangs before it kills it.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import faulthandler
 import logging
 import os
@@ -69,5 +70,7 @@ def install() -> None:
         owner = True
         atexit.register(_remove, root, os.getpid())
     pwd.getpwuid = _getpwuid
-    faulthandler.register(signal.SIGUSR1, all_threads=True)
+    with contextlib.suppress(AttributeError, OSError, RuntimeError, ValueError):
+        # Fails when stderr is None or has no file descriptor; skip the dump.
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     logging.getLogger("asyncio").addFilter(_fast_enough)

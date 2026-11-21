@@ -208,6 +208,15 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(dump.count("(most recent call first)"), 2, dump)
         self.assertIn("Current thread", dump)
 
+    def test_guards_install_without_a_usable_stderr(self):
+        for stderr in ("io.StringIO()", "None"):
+            with self.subTest(stderr=stderr):
+                code = (
+                    f"import io, sys\nsys.stderr = {stderr}\nimport tests\nprint('ok')"
+                )
+                result = run(["-c", code])
+                self.assertEqual((result.returncode, result.stdout), (0, "ok\n"))
+
     def test_only_this_account_moves_home(self):
         uid = os.getuid()
         mine = pwd.getpwuid(uid)

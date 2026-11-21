@@ -27,6 +27,22 @@ class PresubmitTest(unittest.TestCase):
             ],
         )
 
+    def test_tests_run_in_parallel_into_the_coverage_data(self):
+        commands = dict(presubmit.steps("py", Path("w")))
+        self.assertEqual(
+            commands["tests"],
+            [
+                "py",
+                "-m",
+                "scripts.run_tests",
+                "--coverage-data",
+                str(Path("w/coverage.data")),
+            ],
+        )
+        self.assertIn(
+            f"--data-file={Path('w/coverage.data')}", commands["coverage report"]
+        )
+
     def test_stops_at_first_failure(self):
         calls = []
 
