@@ -40,7 +40,14 @@ REPORT = (
 
 
 def run(args, *, env=None, cwd=REPO, **kwargs):
-    environ = {**os.environ, "PYTHONPATH": str(REPO), **(env or {})}
+    # A child that owns a root makes it inside this process's root, so it is
+    # deleted with ours even if the child is killed before its own cleanup.
+    environ = {
+        **os.environ,
+        "PYTHONPATH": str(REPO),
+        testroot.TMPBASE: tempfile.gettempdir(),
+        **(env or {}),
+    }
     environ = {key: value for key, value in environ.items() if value is not None}
     return subprocess.run(
         [sys.executable, *args],
