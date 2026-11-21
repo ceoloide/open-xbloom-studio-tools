@@ -671,16 +671,30 @@ WORKER = (
 # Dies with its parent thread (prctl PR_SET_PDEATHSIG), so an interrupted
 # outer run leaves nothing behind.
 ORPHANS_DIE = "import ctypes, signal; ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
-# Survives SIGUSR1 like a worker with the stack dump, starts a grandchild in
-# its own process group and hangs.
-HANGS = (
-    ORPHANS_DIE + "import subprocess, sys, time\n"
-    "signal.signal(signal.SIGUSR1, lambda *_: print('dump', flush=True))\n"
-    f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHANS_DIE!r}"
-    " + 'import time; time.sleep(20)'])\n"
-    "print(grandchild.pid, flush=True)\n"
+# The grandchild learns of its parent's death by SIGTERM and records it in a
+# marker before it exits; killed with its group, it never gets to run that.
+ORPHAN = (
+    "import ctypes, signal, sys, time\n"
+    "def orphaned(*_):\n"
+    "    open(sys.argv[1], 'w').close()\n"
+    "    sys.exit(0)\n"
+    "signal.signal(signal.SIGTERM, orphaned)\n"
+    "ctypes.CDLL(None).prctl(1, signal.SIGTERM)\n"
     "time.sleep(20)\n"
 )
+
+
+def hangs(marker):
+    """Survives SIGUSR1 like a worker with the stack dump, starts a grandchild
+    in its own process group and hangs."""
+    return (
+        ORPHANS_DIE + "import subprocess, sys, time\n"
+        "signal.signal(signal.SIGUSR1, lambda *_: print('dump', flush=True))\n"
+        f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
+        f" {str(marker)!r}])\n"
+        "print(grandchild.pid, flush=True)\n"
+        "time.sleep(20)\n"
+    )
 
 
 def kill(pid):
@@ -727,6 +741,7 @@ class RealWorkerTests(NestedRootCase):
 
     @unittest.skipUnless(LINUX, "uses prctl and /proc")
     def test_a_timeout_kills_the_workers_whole_group(self):
+        marker = self.base / "orphaned"
         out = io.StringIO()
         [outcome] = run_tests.execute(
             {"tests.test_a": ["tests.test_a"]},
@@ -734,7 +749,7 @@ class RealWorkerTests(NestedRootCase):
             out=out,
             timeout=2,
             grace=0.2,
-            build=lambda targets, data: [sys.executable, "-c", HANGS],
+            build=lambda targets, data: [sys.executable, "-c", hangs(marker)],
         )
         lines = outcome.output.splitlines()
         grandchild = int(lines[0])
@@ -746,6 +761,7 @@ class RealWorkerTests(NestedRootCase):
         while not gone(grandchild) and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertTrue(gone(grandchild))
+        self.assertFalse(marker.exists(), "outlived its parent, so not group-killed")
 
 
 if __name__ == "__main__":
