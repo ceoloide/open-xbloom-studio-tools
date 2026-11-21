@@ -26,20 +26,7 @@ def steps(python: str, workdir: Path) -> list[tuple[str, list[str]]]:
         ("publication", [python, "-m", "scripts.publication_policy"]),
         (
             "tests",
-            [
-                python,
-                "-m",
-                "coverage",
-                "run",
-                f"--data-file={data}",
-                "-m",
-                "unittest",
-                "discover",
-                "--start-directory",
-                "tests",
-                "--top-level-directory",
-                ".",
-            ],
+            [python, "-m", "scripts.run_tests", "--coverage-data", data],
         ),
         (
             "coverage report",
