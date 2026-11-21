@@ -245,6 +245,10 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
                     if armed.read_text() == f"{pid} ssh\n":
                         break
                     await asyncio.sleep(0.01)
+                else:
+                    self.assertEqual(
+                        armed.read_text(), "" if expected else f"{pid} ssh\n"
+                    )
                 parent.kill()
                 parent.communicate()
                 self.assertTrue(await exited(pid))

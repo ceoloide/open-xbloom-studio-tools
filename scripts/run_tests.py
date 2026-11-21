@@ -54,8 +54,11 @@ OWN_LINE = re.compile(r"[.sxuFE]*|-{70}|Ran \d+ tests? in [0-9.]+s|OK( \(.*\))?"
 HEADER = re.compile(r"(?:FAIL|ERROR): (\S+) \(([^)\s]+)\)")
 SEPARATOR = "=" * 70
 # The suffix ``coverage run --parallel-mode`` gives its data files.
-# Matches coverage.sqldata.SUFFIX_PATTERN of the locked coverage 7.16.
-SHARD = re.compile(r"\.[^.]+\.pid\d+\.X\w{6}x(\.H\w{10}h)?")
+# Exactly what coverage 7.16/7.17 writes (coverage.sqldata.filename_suffix and
+# the data hash): host with dots replaced, os.getpid(), 6 random characters
+# and an optional 10-character hash, both drawn from ASCII letters and digits.
+# Its reader's SUFFIX_PATTERN is looser; anything matched here is deleted.
+SHARD = re.compile(r"\.[^.]+\.pid[1-9][0-9]*\.X[A-Za-z0-9]{6}x(\.H[A-Za-z0-9]{10}h)?")
 # Run roots are named like bare roots (``xbs-test-`` plus 8) less 3 bytes, so a
 # worker's ``<run root>/<index>`` is no longer than a bare root for < 100 modules.
 RUN_PREFIX = "xbs-r-"
@@ -280,13 +283,14 @@ class Pool:
                 self.live.add(process.pid)
             code: int | None
             try:
-                code = process.wait(self.timeout)
-            except subprocess.TimeoutExpired:
-                code = None
-                quietly(self.kill, process.pid, signal.SIGUSR1)  # stack dump
-                self.stopping.wait(self.grace)
-                quietly(self.killpg, process.pid, signal.SIGKILL)
-                process.wait()
+                try:
+                    code = process.wait(self.timeout)
+                except subprocess.TimeoutExpired:
+                    code = None
+                    quietly(self.kill, process.pid, signal.SIGUSR1)  # stack dump
+                    self.stopping.wait(self.grace)
+                    quietly(self.killpg, process.pid, signal.SIGKILL)
+                    process.wait()
             except BaseException:
                 # Never leave a worker running unowned: kill and reap it first.
                 quietly(self.killpg, process.pid, signal.SIGKILL)
@@ -426,32 +430,43 @@ def take(done: queue.SimpleQueue[T]) -> T:
 def remove(root: Path) -> bool:
     """Delete ``root``, making its directories writable if needed.
 
-    Never follows a symbolic link: shutil.rmtree does not, and the retry opens
-    each directory with O_NOFOLLOW, relative to its parent's descriptor.
+    Never follows a symbolic link: shutil.rmtree does not, and the retry
+    changes and opens each directory without following links, relative to its
+    parent's descriptor.
     """
     shutil.rmtree(root, ignore_errors=True)
     if not os.path.lexists(root):
         return True
-    unlock(str(root))
+    unlock(root)
     shutil.rmtree(root, ignore_errors=True)
     return not os.path.lexists(root)
 
 
-def unlock(name: str, parent: int | None = None) -> None:
-    """Give the owner rwx on directory ``name`` and every directory below it."""
+def unlock(root: Path) -> None:
+    """Give the owner rwx on directory ``root`` and every directory below it."""
+    opened: list[int] = []
+    # (parent descriptor, name); a stack, not recursion: trees can be deep.
+    pending: list[tuple[int | None, str]] = [(None, str(root))]
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-    except OSError:
-        return  # a link, gone or unreadable; the caller reports what is left
-    try:
-        with contextlib.suppress(OSError):
-            os.fchmod(fd, stat.S_IRWXU)
-        with os.scandir(fd) as entries:
-            directories = [e.name for e in entries if e.is_dir(follow_symlinks=False)]
-        for directory in directories:
-            unlock(directory, fd)
+        while pending:
+            parent, name = pending.pop()
+            # Changes a directory itself; refuses a link, whatever it points at.
+            with contextlib.suppress(OSError, ValueError, NotImplementedError):
+                os.chmod(name, stat.S_IRWXU, dir_fd=parent, follow_symlinks=False)
+            try:
+                fd = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                )
+            except OSError:
+                continue  # a link, gone or still unreadable
+            opened.append(fd)
+            with os.scandir(fd) as entries:
+                pending += [
+                    (fd, e.name) for e in entries if e.is_dir(follow_symlinks=False)
+                ]
     finally:
-        os.close(fd)
+        for fd in opened:
+            os.close(fd)
 
 
 def line(outcome: Outcome) -> str:

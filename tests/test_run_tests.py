@@ -345,6 +345,41 @@ class RunTests(RepoCase):
         self.assertEqual(waits, [run_tests.TIMEOUT, None])
         self.assertFalse(run_root(out.getvalue()).exists())
 
+    def test_a_failed_reap_after_a_timeout_kills_and_reaps_again(self):
+        waits = []
+
+        class Broken(FakeProcess):
+            def wait(self, timeout=None):
+                waits.append(timeout)
+                if len(waits) == 1:
+                    raise subprocess.TimeoutExpired("fake", timeout)
+                if len(waits) == 2:
+                    raise OSError("reap failed")
+                return -signal.SIGKILL
+
+        fake = Fake()
+        spawn = lambda argv, env, output: Broken(7, 0, False, None)  # noqa: E731
+        out = io.StringIO()
+        with self.assertRaisesRegex(OSError, "reap failed"):
+            run_tests.execute(
+                {"tests.test_a": ["tests.test_a"]},
+                jobs=1,
+                out=out,
+                spawn=spawn,
+                kill=fake.kill,
+                killpg=fake.killpg_any,
+                grace=0,
+            )
+        self.assertEqual(
+            fake.signals,
+            [
+                ("kill", 7, signal.SIGUSR1),
+                ("killpg", 7, signal.SIGKILL),
+                ("killpg", 7, signal.SIGKILL),
+            ],
+        )
+        self.assertEqual(waits, [run_tests.TIMEOUT, None, None])
+
     def test_read_only_directories_in_a_root_are_removed(self):
         outside, modes = self.outside_tree()
 
@@ -353,6 +388,11 @@ class RunTests(RepoCase):
             (home / "locked" / "deeper").mkdir(parents=True)
             (home / "locked" / "deeper" / "file").write_text("x")
             (home / "locked" / "link").symlink_to(outside)
+            # Unreadable, and searchable but unreadable, with content.
+            for name, mode in (("none", 0o000), ("blind", 0o300)):
+                (home / "locked" / name / "inner").mkdir(parents=True)
+                (home / "locked" / name / "inner" / "file").write_text("x")
+                os.chmod(home / "locked" / name, mode)
             os.chmod(home / "locked" / "deeper", 0o500)
             os.chmod(home / "locked", 0o500)
             return fake.spawn(argv, env, output)
@@ -365,6 +405,14 @@ class RunTests(RepoCase):
         self.assertFalse(os.path.lexists(run_root(out.getvalue())))
         self.assertEqual(problems, [])
         self.assert_untouched(modes)
+
+    def test_an_unreadable_root_is_removed(self):
+        root = self.base / "root"
+        (root / "home").mkdir(parents=True)
+        (root / "home" / "file").write_text("x")
+        os.chmod(root, 0o000)
+        self.assertTrue(run_tests.remove(root))
+        self.assertFalse(os.path.lexists(root))
 
     def test_a_root_that_is_a_link_is_never_followed(self):
         outside, modes = self.outside_tree()
@@ -564,9 +612,16 @@ class CoverageTests(RepoCase):
             self.repo / "cov[1].json": "sibling report",
             self.repo / "cov[1].d" / "inside": "sibling directory",
             self.repo / "cov[1].host.pid1.Xlink00x": None,  # a link, not a shard
-            # Names coverage itself would not produce: 5-char random, short hash.
-            self.repo / "cov[1].host.pid1.Xnotesx": "notes",
-            self.repo / "cov[1].host.pid17.Xa1b2c3x.H123h": "near miss",
+            # Names coverage itself would not produce: a random part of the
+            # wrong length or alphabet, a short or non-ASCII hash, a pid with
+            # a leading zero.
+            self.repo / "cov[1].host.pid1.Xnotesx": "5 characters",
+            self.repo / "cov[1].host.pid1.Xa1b2c3dx": "7 characters",
+            self.repo / "cov[1].host.pid1.X______x": "underscores",
+            self.repo / "cov[1].host.pid1.Xééééééx": "non-ASCII",
+            self.repo / "cov[1].host.pid01.Xa1b2c3x": "leading zero",
+            self.repo / "cov[1].host.pid17.Xa1b2c3x.H123h": "short hash",
+            self.repo / "cov[1].host.pid17.Xa1b2c3x.H__________h": "hash alphabet",
         }
         for path, text in keep.items():
             if text is None:
@@ -836,14 +891,14 @@ INTERRUPTIBLE = (
 )
 
 
-def hangs(marker):
-    """A worker that dies with this process, survives SIGUSR1 like a worker
-    with the stack dump, starts a grandchild in its own process group (the
-    worker's) and hangs."""
+def hangs(marker, parent=None):
+    """A worker that dies with its parent (this process unless given),
+    survives SIGUSR1 like a worker with the stack dump, starts a grandchild
+    in its process group (the worker's) and hangs."""
     return (
         "import ctypes, os, signal, subprocess, sys, time\n"
         "ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
-        f"if os.getppid() != {os.getpid()}:\n"
+        f"if os.getppid() != {parent or os.getpid()}:\n"
         "    sys.exit(1)\n" + record("worker") + "signal.signal(signal.SIGUSR1,"
         " lambda *_: print('dump', flush=True))\n"
         f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
@@ -853,8 +908,24 @@ def hangs(marker):
     )
 
 
-def roles(pids):
-    return {line.split()[1] for line in pids.read_text().splitlines()}
+def roles(pids, live=False):
+    """The roles recorded in ``pids``; with ``live``, of running processes only."""
+    return {
+        role
+        for pid, role in (line.split() for line in pids.read_text().splitlines())
+        if not (live and gone(int(pid)))
+    }
+
+
+def stop(process):
+    """Interrupt ``process`` if it still runs, killing it only as a last resort."""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    process.communicate()
 
 
 def kill(pid):
@@ -912,7 +983,8 @@ class RealWorkerTests(NestedRootCase):
                 pids = self.base / f"pids-{signum.name}"
                 pids.touch()
                 runner = subprocess.Popen(
-                    [sys.executable, "-c", INTERRUPTIBLE, str(os.getpid()), *targets],
+                    [sys.executable, "-c", INTERRUPTIBLE, str(os.getpid())]
+                    + ["--jobs", "2", *targets],
                     cwd=REPO,
                     start_new_session=True,
                     env={**os.environ, PIDS: str(pids)},
@@ -920,25 +992,46 @@ class RealWorkerTests(NestedRootCase):
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
-                self.addCleanup(runner.kill)
-                # The nested worker, its grandchild and a fake ssh are armed.
+                # SIGTERM lets the runner stop its own workers; kill is a last resort.
+                self.addCleanup(stop, runner)
+                # A nested worker, its grandchild and a fake ssh, all alive.
                 deadline = time.monotonic() + 30
-                while not {"worker", "grandchild", "ssh"} <= roles(pids):
+                while not {"worker", "grandchild", "ssh"} <= roles(pids, live=True):
                     self.assertLess(time.monotonic(), deadline)
                     self.assertIsNone(runner.poll(), "finished before the interrupt")
-                    time.sleep(0.02)
+                    time.sleep(0.01)
                 runner.send_signal(signum)
                 output, _ = runner.communicate(timeout=60)
                 self.assertEqual(runner.returncode, 128 + signum, output)
                 recorded = [
                     int(line.split()[0]) for line in pids.read_text().splitlines()
                 ]
-                for pid in recorded:
-                    self.addCleanup(kill, pid)
                 deadline = time.monotonic() + 5
                 while not all(map(gone, recorded)) and time.monotonic() < deadline:
                     time.sleep(0.05)
                 self.assertEqual([p for p in recorded if not gone(p)], [])
+
+    @unittest.skipUnless(LINUX, "uses prctl and /proc")
+    def test_fixtures_exit_when_started_by_an_unexpected_parent(self):
+        # This process's parent is never theirs, nor their reaper.
+        wrong = str(os.getppid())
+        marker = self.base / "orphaned"
+        programs = {
+            "worker": [hangs(marker, parent=wrong)],
+            "grandchild": [ORPHAN, str(marker), wrong],
+            "runner": [INTERRUPTIBLE, wrong, "tests.test_zz"],
+        }
+        for name, argv in programs.items():
+            with self.subTest(name):
+                child = subprocess.run(
+                    [sys.executable, "-c", *argv],
+                    cwd=REPO,
+                    capture_output=True,
+                    timeout=10,
+                )
+                expected = 0 if name == "grandchild" else 1
+                self.assertEqual(child.returncode, expected, child.stderr)
+        self.assertTrue(marker.exists())
 
     @unittest.skipUnless(LINUX, "uses prctl and /proc")
     def test_a_timeout_kills_the_workers_whole_group(self):
