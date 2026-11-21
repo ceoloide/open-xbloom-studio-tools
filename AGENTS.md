@@ -8,7 +8,7 @@ map, and the file stays at most 150 lines.
 The package `xbloom_studio` is the `xbloom-studio` command, its daemon and the
 `xbloom-studio-mcp` server for xBloom Studio machines. Tests are offline and use
 a simulated machine. Python 3.10 to 3.14; uv with the committed `uv.lock`, so
-`uv run --locked` creates and syncs `.venv` itself. Run everything from the
+`uv run --locked` creates and syncs .venv itself. Run everything from the
 repository root.
 
 ## Commands
@@ -34,16 +34,15 @@ The command line from source, against the simulator, with the test guards:
 uv run --locked python -m tests.child xbloom_studio --connector simulator --direct machine state
 ```
 
-Each such command owns a fresh private root, so its default database is gone
-when it exits; pass `--db` with a path outside the repository to keep state
-between commands.
+Each such command gets a fresh private root and database; to keep state
+between commands, pass `--db` with a path outside the repository.
 
-Fixes that presubmit prints for the lockfile, format and lint steps:
+The fixes presubmit prints for the lockfile, lint and format steps, in order:
 
 ```sh
-uv run --locked ruff format .
-uv run --locked ruff check --fix .
 uv lock
+uv run --locked ruff check --fix .
+uv run --locked ruff format .
 ```
 
 ### Presubmit
@@ -64,10 +63,11 @@ rerun line uses `uv run --frozen`, because with a stale lockfile
 most `--jobs` at once (default min(4, CPUs)). A module's result is `ok`,
 `FAIL`, `EMPTY` (no tests ran), `NOISE` (a line that is not unittest's own) or
 `TIMEOUT` (300 s; it dumps every thread's stack, then kills the module's
-process group). A failing run ends with a `rerun:` line naming the failed test
-IDs. Known limits: a descendant that starts its own session survives the kill;
-if the runner itself dies by SIGKILL, SIGHUP or SIGQUIT, its workers and run
-root (`xbs-r-*` under /dev/shm or /tmp) stay behind, so kill and delete them.
+process group). A failing run ends with a `rerun:` line: the failed test IDs
+where it can read them, else the module. Known limits: a descendant that
+starts its own session survives the kill; if the runner itself dies by
+SIGKILL, SIGHUP or SIGQUIT, its workers and run root (`xbs-r-*` under /dev/shm
+or /tmp) stay behind, so kill and delete them.
 
 Known rare flake: `tests.test_control.ReviewRegressionTests.test_grinder_pulse_is_budgeted_from_the_start_frame`
 can fail under heavy load. Rerun it before chasing it.
@@ -112,8 +112,9 @@ can fail under heavy load. Rerun it before chasing it.
 ## Environment
 
 - `XBLOOM_STUDIO_TEST_TMPBASE` is the only knob: the directory for new test
-  roots (default: the first usable of /dev/shm and /tmp). Keep it to 26 bytes
-  or less; a longer base breaks a socket-path test, under bare unittest too.
+  roots (default: the first usable of /dev/shm and /tmp, else Python's temp
+  directory). Keep the resolved path (symlinks followed) to 26 bytes or less;
+  a longer base breaks a socket-path test, under bare unittest too.
 - Never export `XBLOOM_STUDIO_TEST_ROOT`. It is internal, set by whoever creates
   a root; a stale value makes `import tests` raise.
 - `XBLOOM_STUDIO_DEVICE` is removed from every test environment.
