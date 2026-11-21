@@ -7,6 +7,7 @@ import itertools
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,7 @@ class Fake:
         pid = next(self.pids)
         self.spawned.append((module, list(argv), dict(env)))
         self.processes[pid] = FakeProcess(pid, code, hang, self.on_wait)
+        self.processes[pid].module = module
         return self.processes[pid]
 
     def kill(self, pid, signum):
@@ -82,6 +84,9 @@ class Fake:
     def killpg(self, pid, signum):
         self.signals.append(("killpg", pid, signum))
         self.processes[pid].killed.set()
+
+    def killpg_any(self, pid, signum):
+        self.signals.append(("killpg", pid, signum))
 
 
 def clock():
@@ -141,7 +146,7 @@ class RunTests(RepoCase):
         code, output = self.main(fake)
         self.assertEqual(code, 0)
         lines = output.splitlines()
-        self.assertRegex(lines[0], r"^3 modules, 1 jobs, root .*/xbs-run-[^/]+$")
+        self.assertRegex(lines[0], r"^3 modules, 1 jobs, root .*/xbs-r-[^/]+$")
         self.assertEqual(
             [line.split()[:3] for line in lines[1:4]],
             [["ok", "tests.test_a", "3"], ["ok", "tests.test_b", "1"]]
@@ -272,7 +277,7 @@ class RunTests(RepoCase):
         out = io.StringIO()
         run_tests.execute(plan, jobs=2, out=out, environ=environ, spawn=fake.spawn)
         root = run_root(out.getvalue())
-        self.assertTrue(root.name.startswith("xbs-run-"))
+        self.assertTrue(root.name.startswith(run_tests.RUN_PREFIX))
         self.assertFalse(root.exists())
         roots = {}
         for module, _, env in fake.spawned:
@@ -296,17 +301,58 @@ class RunTests(RepoCase):
             run_tests.execute({"tests.test_a": ["x"]}, jobs=1, out=out, spawn=broken)
         self.assertFalse(run_root(out.getvalue()).exists())
 
-    def test_read_only_directories_in_a_root_are_removed(self):
+    def outside_tree(self):
+        """A directory tree outside every root, with distinctive modes."""
         outside = tempfile.TemporaryDirectory()
         self.addCleanup(outside.cleanup)
-        os.chmod(outside.name, 0o500)
-        self.addCleanup(os.chmod, outside.name, 0o700)
+        top = Path(outside.name)
+        (top / "child").mkdir()
+        (top / "child" / "file").write_text("keep")
+        modes = {top: 0o551, top / "child": 0o751}
+        for path in modes:
+            self.addCleanup(os.chmod, path, 0o700)
+        for path, mode in modes.items():
+            os.chmod(path, mode)
+        return top, modes
+
+    def assert_untouched(self, modes):
+        for path, mode in modes.items():
+            self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), mode, path)
+        self.assertEqual((next(iter(modes)) / "child" / "file").read_text(), "keep")
+
+    def test_a_failed_wait_kills_and_reaps_the_worker(self):
+        waits = []
+
+        class Broken(FakeProcess):
+            def wait(self, timeout=None):
+                waits.append(timeout)
+                if len(waits) == 1:
+                    raise OSError("wait failed")
+                return -signal.SIGKILL
+
+        fake = Fake()
+        spawn = lambda argv, env, output: Broken(7, 0, False, None)  # noqa: E731
+        out = io.StringIO()
+        with self.assertRaisesRegex(OSError, "wait failed"):
+            run_tests.execute(
+                {"tests.test_a": ["tests.test_a"]},
+                jobs=1,
+                out=out,
+                spawn=spawn,
+                killpg=fake.killpg_any,
+            )
+        self.assertEqual(fake.signals, [("killpg", 7, signal.SIGKILL)])
+        self.assertEqual(waits, [run_tests.TIMEOUT, None])
+        self.assertFalse(run_root(out.getvalue()).exists())
+
+    def test_read_only_directories_in_a_root_are_removed(self):
+        outside, modes = self.outside_tree()
 
         def lock(argv, env, output):
             home = Path(env["HOME"])
             (home / "locked" / "deeper").mkdir(parents=True)
             (home / "locked" / "deeper" / "file").write_text("x")
-            (home / "locked" / "link").symlink_to(outside.name)
+            (home / "locked" / "link").symlink_to(outside)
             os.chmod(home / "locked" / "deeper", 0o500)
             os.chmod(home / "locked", 0o500)
             return fake.spawn(argv, env, output)
@@ -318,8 +364,15 @@ class RunTests(RepoCase):
         run_tests.execute(plan, jobs=1, out=out, problems=problems, spawn=lock)
         self.assertFalse(os.path.lexists(run_root(out.getvalue())))
         self.assertEqual(problems, [])
-        # The link's target keeps its mode.
-        self.assertEqual(os.stat(outside.name).st_mode & 0o777, 0o500)
+        self.assert_untouched(modes)
+
+    def test_a_root_that_is_a_link_is_never_followed(self):
+        outside, modes = self.outside_tree()
+        link = self.base / "root"
+        link.symlink_to(outside)
+        self.assertFalse(run_tests.remove(link))
+        self.assert_untouched(modes)
+        link.unlink()
 
     def test_a_root_that_survives_removal_fails_the_run(self):
         real = run_tests.shutil.rmtree
@@ -351,7 +404,7 @@ class RunTests(RepoCase):
             )
             pool.stop()
             with self.assertRaises(run_tests.Stopped):
-                pool.run("0", "tests.test_a", ["tests.test_a"])
+                pool.run(0, "tests.test_a", ["tests.test_a"])
 
     def test_interrupt_kills_live_workers_and_removes_the_root(self):
         for signum, expected in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
@@ -391,14 +444,77 @@ class RunTests(RepoCase):
         real = run_tests.shutil.rmtree
 
         def rmtree(path, **options):
-            real(path, **options)
+            # A handler that raised here would stop the removal.
             os.kill(os.getpid(), signal.SIGINT)
+            real(path, **options)
 
         with mock.patch.object(run_tests.shutil, "rmtree", rmtree):
             code, output = self.main(Fake())
         self.assertEqual(code, 130)
         self.assertEqual(output.count("\nok "), 3)
         self.assertFalse(run_root(output).exists())
+
+    def test_interrupt_while_starting_a_worker(self):
+        fake = Fake({"tests.test_a": ("", 0, "block")})
+
+        def spawn(argv, env, output):
+            os.kill(os.getpid(), signal.SIGTERM)
+            return fake.spawn(argv, env, output)
+
+        out = io.StringIO()
+        code = run_tests.main(
+            ["--jobs", "1"], out=out, repo=self.repo, spawn=spawn, killpg=fake.killpg
+        )
+        output = out.getvalue()
+        self.assertEqual(code, 143, output)
+        self.assertEqual(fake.signals, [("killpg", 100001, signal.SIGKILL)])
+        self.assertFalse(run_root(output).exists())
+
+    def test_failures_are_listed_in_plan_order(self):
+        printed = threading.Event()
+
+        class Out(io.StringIO):
+            def write(self, text):
+                if "tests.test_b " in text:
+                    printed.set()
+                return super().write(text)
+
+        def ordered(process):
+            if process.module == "tests.test_a":  # finishes after tests.test_b
+                printed.wait(10)
+
+        failing = {
+            m: (FAILURE.replace("test_b", m[6:]), 1, False)
+            for m in ("tests.test_a", "tests.test_b")
+        }
+        fake = Fake(failing, on_wait=ordered)
+        out = Out()
+        code = run_tests.main(
+            ["--jobs", "2", "tests.test_a", "tests.test_b"],
+            out=out,
+            repo=self.repo,
+            spawn=fake.spawn,
+        )
+        output = out.getvalue()
+        self.assertEqual(code, 1)
+        lines = output.splitlines()
+        self.assertEqual(
+            [line.split()[1] for line in lines[1:3]], ["tests.test_b", "tests.test_a"]
+        )
+        ids = "tests.test_a.T.test_a tests.test_b.T.test_b"
+        self.assertIn(f"rerun: {run_tests.RERUN} {ids}\n", output)
+
+    def test_worker_roots_are_no_longer_than_bare_roots(self):
+        known = [f"tests.test_{n:02d}" for n in range(12)]
+        fake = Fake()
+        run_tests.execute(
+            {m: [m] for m in known}, jobs=4, out=io.StringIO(), spawn=fake.spawn
+        )
+        bare = len(f"/{testroot.PREFIX}12345678/tmp")
+        for _, _, env in fake.spawned:
+            self.assertLessEqual(
+                len(env["TMPDIR"]) - len(str(self.base)), bare, env["TMPDIR"]
+            )
 
     def test_no_test_modules_is_a_usage_error(self):
         for path in (self.repo / "tests").glob("test_*.py"):
@@ -422,7 +538,9 @@ class CoverageTests(RepoCase):
             written.add_lines({str(self.repo / f"{name}.py"): [1, 2]})
             written.write()
             if corrupt:
-                Path(f"{data}.host.pid1.Xbroken{name}x").write_text("not coverage data")
+                Path(f"{data}.host.pid1.Xbrok{int(name):02d}x").write_text(
+                    "not coverage data"
+                )
             return fake.spawn(argv, env, output)
 
         return spawn
@@ -445,7 +563,10 @@ class CoverageTests(RepoCase):
             self.repo / "cov1.keep": "glob match",
             self.repo / "cov[1].json": "sibling report",
             self.repo / "cov[1].d" / "inside": "sibling directory",
-            self.repo / "cov[1].host.pid1.Xlinkx": None,  # a link, not a shard
+            self.repo / "cov[1].host.pid1.Xlink00x": None,  # a link, not a shard
+            # Names coverage itself would not produce: 5-char random, short hash.
+            self.repo / "cov[1].host.pid1.Xnotesx": "notes",
+            self.repo / "cov[1].host.pid17.Xa1b2c3x.H123h": "near miss",
         }
         for path, text in keep.items():
             if text is None:
@@ -511,7 +632,7 @@ class CoverageTests(RepoCase):
         code = run_tests.main(argv, out=out, repo=self.repo, spawn=spawn)
         output = out.getvalue()
         self.assertEqual(code, 1, output)
-        self.assertIn(f"coverage: not combined: {data}.host.pid1.Xbroken0x\n", output)
+        self.assertIn(f"coverage: not combined: {data}.host.pid1.Xbrok00x\n", output)
         self.assertIn("Couldn't use data file", output)
 
     def test_missing_data_directory_means_no_shards(self):
@@ -668,31 +789,47 @@ WORKER = (
     " 'child': child, 'leader': os.getsid(0) == os.getpid(),"
     " 'colors': os.environ.get('PYTHON_COLORS')}))\n"
 )
-# Dies with its parent thread (prctl PR_SET_PDEATHSIG), so an interrupted
-# outer run leaves nothing behind.
-ORPHANS_DIE = "import ctypes, signal; ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
-# The grandchild learns of its parent's death by SIGTERM and records it in a
-# marker before it exits; killed with its group, it never gets to run that.
+# Fixture processes append their pid to this file, when it is set, once they
+# are sure to die with their parent.
+PIDS = "XBS_TEST_PIDS"
+RECORD = (
+    f"if os.environ.get({PIDS!r}):\n"
+    f"    with open(os.environ[{PIDS!r}], 'a') as pids:\n"
+    "        pids.write(f'{os.getpid()}\\n')\n"
+)
+# The grandchild learns of its parent's death by SIGTERM (prctl
+# PR_SET_PDEATHSIG) and records it in a marker before it exits; killed with
+# its group, it never gets to. A parent already gone before prctl counts too.
+# argv: marker, parent pid. Prints its pid once armed.
 ORPHAN = (
-    "import ctypes, signal, sys, time\n"
+    "import ctypes, os, signal, sys, time\n"
     "def orphaned(*_):\n"
-    "    open(sys.argv[1], 'w').close()\n"
-    "    sys.exit(0)\n"
+    "    try:\n"
+    "        open(sys.argv[1], 'w').close()\n"
+    "    except OSError:\n"
+    "        pass  # the run root is being deleted\n"
+    "    os._exit(0)\n"
     "signal.signal(signal.SIGTERM, orphaned)\n"
     "ctypes.CDLL(None).prctl(1, signal.SIGTERM)\n"
+    "if os.getppid() != int(sys.argv[2]):\n"
+    "    orphaned()\n" + RECORD + "print(os.getpid(), flush=True)\n"
     "time.sleep(20)\n"
 )
 
 
 def hangs(marker):
-    """Survives SIGUSR1 like a worker with the stack dump, starts a grandchild
-    in its own process group and hangs."""
+    """A worker that dies with this process, survives SIGUSR1 like a worker
+    with the stack dump, starts a grandchild in its own process group (the
+    worker's) and hangs."""
     return (
-        ORPHANS_DIE + "import subprocess, sys, time\n"
-        "signal.signal(signal.SIGUSR1, lambda *_: print('dump', flush=True))\n"
+        "import ctypes, os, signal, subprocess, sys, time\n"
+        "ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
+        f"if os.getppid() != {os.getpid()}:\n"
+        "    sys.exit(1)\n" + RECORD + "signal.signal(signal.SIGUSR1,"
+        " lambda *_: print('dump', flush=True))\n"
         f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
-        f" {str(marker)!r}])\n"
-        "print(grandchild.pid, flush=True)\n"
+        f" {str(marker)!r}, str(os.getpid())], stdout=subprocess.PIPE, text=True)\n"
+        "print(grandchild.stdout.readline().strip(), flush=True)\n"
         "time.sleep(20)\n"
     )
 
@@ -738,6 +875,44 @@ class RealWorkerTests(NestedRootCase):
             self.assertTrue(report["leader"])
             self.assertEqual(report["colors"], "0")
         self.assertNotEqual(str(tests.isolation.root), reports["tests.test_a"]["root"])
+
+    @unittest.skipUnless(LINUX, "uses prctl and /proc")
+    def test_interrupting_the_runner_leaves_no_fixture_running(self):
+        targets = [
+            "tests.test_run_tests.RealWorkerTests"
+            ".test_a_timeout_kills_the_workers_whole_group",
+            "tests.test_ssh_rpc.CarrierTests"
+            ".test_output_limits_and_timeouts_reap_the_process_group",
+        ]
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=signum.name):
+                pids = self.base / f"pids-{signum.name}"
+                pids.touch()
+                runner = subprocess.Popen(
+                    [sys.executable, "-m", "scripts.run_tests", *targets],
+                    cwd=REPO,
+                    env={**os.environ, PIDS: str(pids)},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                self.addCleanup(runner.kill)
+                # The nested worker, its grandchild and at least one fake ssh.
+                deadline = time.monotonic() + 30
+                while len(pids.read_text().split()) < 3:
+                    self.assertLess(time.monotonic(), deadline)
+                    self.assertIsNone(runner.poll(), "finished before the interrupt")
+                    time.sleep(0.02)
+                runner.send_signal(signum)
+                output, _ = runner.communicate(timeout=60)
+                self.assertEqual(runner.returncode, 128 + signum, output)
+                recorded = [int(pid) for pid in pids.read_text().split()]
+                for pid in recorded:
+                    self.addCleanup(kill, pid)
+                deadline = time.monotonic() + 5
+                while not all(map(gone, recorded)) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual([p for p in recorded if not gone(p)], [])
 
     @unittest.skipUnless(LINUX, "uses prctl and /proc")
     def test_a_timeout_kills_the_workers_whole_group(self):

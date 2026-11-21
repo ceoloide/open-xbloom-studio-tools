@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,9 +22,46 @@ from xbloom_studio.rpc import LocalServer, RemoteError
 from xbloom_studio.ssh_rpc import REMOTE_METHODS, relay, ssh_call, validate_host
 from xbloom_studio.storage import Store
 
-FAKE = """#!PYTHON
+# Fixture processes die with their parent (prctl PR_SET_PDEATHSIG), and exit
+# if it is gone already, so an interrupted run leaves none behind. When
+# XBS_TEST_PIDS is set they append their pid to it once armed.
+ARMED = """
+def armed(signum, parent):
+    if sys.platform.startswith("linux"):
+        import ctypes
+        ctypes.CDLL(None).prctl(1, signum)
+        if os.getppid() != parent:
+            os.kill(os.getpid(), signum)
+    if os.environ.get("XBS_TEST_PIDS"):
+        with open(os.environ["XBS_TEST_PIDS"], "a") as pids:
+            pids.write(f"{os.getpid()}\\n")
+"""
+# Records its parent's death in a marker; killed with its group by SIGKILL,
+# it never gets to. argv: parent pid, marker.
+DESCENDANT = (
+    "import os, signal, sys, time\n"
+    + ARMED
+    + """
+def orphaned(*_):
+    try:
+        open(sys.argv[2], "w").close()
+    except OSError:
+        pass
+    os._exit(0)
+# Not SIGTERM: the caller's group termination may send that.
+signal.signal(signal.SIGUSR2, orphaned)
+armed(signal.SIGUSR2, int(sys.argv[1]))
+time.sleep(10)
+"""
+)
+FAKE = (
+    """#!PYTHON
 import json, os, signal, subprocess, sys, time
 from pathlib import Path
+"""
+    + ARMED
+    + """
+armed(signal.SIGKILL, int(os.environ["FAKE_SSH_PARENT"]))
 if os.environ["FAKE_SSH_MODE"] == "closed":
     sys.exit(0)
 request = sys.stdin.buffer.read()
@@ -45,14 +83,18 @@ elif mode == "hang":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(10)
 elif mode == "descendant":
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    orphaned = str(audit.parent / "orphaned")
+    child = subprocess.Popen(
+        [sys.executable, "-c", DESCENDANT_SOURCE, str(os.getpid()), orphaned]
+    )
     (audit.parent / "descendant").write_text(str(child.pid))
     time.sleep(10)
 elif mode == "truncated":
     sys.stdout.write('{"ok":true,"data":1}')
 elif mode == "malformed":
     print('{"ok":true}')
-"""
+""".replace("DESCENDANT_SOURCE", repr(DESCENDANT))
+)
 
 
 async def exited(pid, timeout=3.0):
@@ -63,7 +105,7 @@ async def exited(pid, timeout=3.0):
         try:
             if status.read_text().rsplit(")", 1)[1].split()[0] == "Z":
                 return True
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):  # gone while reading
             return True
         await asyncio.sleep(0.01)
     return False
@@ -90,6 +132,7 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
             PATH=str(self.root) + os.pathsep + os.environ["PATH"],
             FAKE_SSH_AUDIT=str(self.audit),
             FAKE_SSH_MODE="success",
+            FAKE_SSH_PARENT=str(os.getpid()),
         )
         self.env.start()
 
@@ -164,6 +207,42 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
             await ssh_call("host", "service_info", timeout=1)
         pid = int((self.root / "descendant").read_text())
         self.assertTrue(await exited(pid))
+        # It died with the group, not because its parent died first.
+        self.assertFalse((self.root / "orphaned").exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "uses prctl and /proc")
+    async def test_the_fake_ssh_dies_with_its_parent(self):
+        # It runs in its own session, so only this keeps an interrupted run
+        # from leaving it behind.
+        self.mode("hang")
+        armed = self.root / "armed"
+        code = (
+            "import os, subprocess, sys, time\n"
+            "os.environ['FAKE_SSH_PARENT'] = sys.argv[2] or str(os.getpid())\n"
+            "ssh = subprocess.Popen([sys.argv[1]], stdin=subprocess.DEVNULL,"
+            " stdout=subprocess.DEVNULL, start_new_session=True)\n"
+            "print(ssh.pid, flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        # Parent killed once the fake is armed; a parent other than expected.
+        for expected in ("", "1"):
+            with self.subTest(expected=expected or "its parent"):
+                armed.write_text("")
+                parent = subprocess.Popen(
+                    [sys.executable, "-c", code, str(self.root / "ssh"), expected],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    env={**os.environ, "XBS_TEST_PIDS": str(armed)},
+                )
+                self.addCleanup(parent.kill)
+                pid = int(parent.stdout.readline())
+                for _ in range(1000 if not expected else 0):
+                    if armed.read_text() == f"{pid}\n":
+                        break
+                    await asyncio.sleep(0.01)
+                parent.kill()
+                parent.communicate()
+                self.assertTrue(await exited(pid))
 
     async def test_missing_ssh_is_reported_before_submission(self):
         with patch.dict(os.environ, PATH=str(self.root / "empty")):

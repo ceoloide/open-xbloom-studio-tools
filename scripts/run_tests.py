@@ -12,7 +12,10 @@ the tests: the module list comes from the file names.
 Limits: a timeout or an interrupt kills each worker's process group, so a
 descendant that starts its own session survives it. If the runner itself is
 killed with a signal it cannot catch (SIGKILL) or does not handle (such as
-SIGHUP or SIGQUIT), its workers and run root are left behind.
+SIGHUP or SIGQUIT), its workers and run root are left behind. A worker's root
+is exactly as long as the root of a bare ``python -m unittest`` run, so a long
+``XBLOOM_STUDIO_TEST_TMPBASE`` that breaks socket paths here breaks them there
+too (about 48 bytes is the most the socket tests allow).
 """
 
 from __future__ import annotations
@@ -51,7 +54,11 @@ OWN_LINE = re.compile(r"[.sxuFE]*|-{70}|Ran \d+ tests? in [0-9.]+s|OK( \(.*\))?"
 HEADER = re.compile(r"(?:FAIL|ERROR): (\S+) \(([^)\s]+)\)")
 SEPARATOR = "=" * 70
 # The suffix ``coverage run --parallel-mode`` gives its data files.
-SHARD = re.compile(r"\.[^.]+\.pid\d+\.X\w+x(\.H\w+h)?")
+# Matches coverage.sqldata.SUFFIX_PATTERN of the locked coverage 7.16.
+SHARD = re.compile(r"\.[^.]+\.pid\d+\.X\w{6}x(\.H\w{10}h)?")
+# Run roots are named like bare roots (``xbs-test-`` plus 8) less 3 bytes, so a
+# worker's ``<run root>/<index>`` is no longer than a bare root for < 100 modules.
+RUN_PREFIX = "xbs-r-"
 # Workers must print plain text, or the output rule and ID parsing fail.
 COLORS = {"PYTHON_COLORS": "0", "NO_COLOR": "1"}
 
@@ -76,6 +83,7 @@ class Outcome:
     seconds: float = 0.0
     output: str = ""
     noise: list[str] = field(default_factory=list)
+    index: int = 0
 
 
 class Stopped(Exception):
@@ -253,9 +261,10 @@ class Pool:
         self.stopping = threading.Event()
         self.live: set[int] = set()
 
-    def run(self, name: str, module: str, targets: Sequence[str]) -> Outcome:
+    def run(self, index: int, module: str, targets: Sequence[str]) -> Outcome:
         # A short name keeps socket paths under the root within AF_UNIX limits.
-        outcome = Outcome(module, self.run_root / name)
+        name = str(index)
+        outcome = Outcome(module, self.run_root / name, index=index)
         outcome.root.mkdir(mode=0o700)
         env = dict(self.environ)
         testroot.apply(env, outcome.root)
@@ -278,6 +287,12 @@ class Pool:
                 self.stopping.wait(self.grace)
                 quietly(self.killpg, process.pid, signal.SIGKILL)
                 process.wait()
+            except BaseException:
+                # Never leave a worker running unowned: kill and reap it first.
+                quietly(self.killpg, process.pid, signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    process.wait()
+                raise
             finally:
                 with self.lock:
                     self.live.discard(process.pid)
@@ -331,7 +346,7 @@ def execute(
     threads: list[threading.Thread] = []
     outcomes: list[Outcome] = []
     try:
-        run_root = testroot.create(environ, prefix="xbs-run-")
+        run_root = testroot.create(environ, prefix=RUN_PREFIX)
         pool = Pool(
             run_root,
             environ=environ,
@@ -346,18 +361,18 @@ def execute(
         )
         workers = min(jobs, len(plan))
         print(f"{len(plan)} modules, {workers} jobs, root {run_root}", file=out)
-        todo: queue.SimpleQueue[tuple[str, str, Sequence[str]]] = queue.SimpleQueue()
+        todo: queue.SimpleQueue[tuple[int, str, Sequence[str]]] = queue.SimpleQueue()
         for index, (module, targets) in enumerate(plan.items()):
-            todo.put((str(index), module, targets))
+            todo.put((index, module, targets))
 
         def work(pool: Pool) -> None:
             try:
                 while True:
                     try:
-                        name, module, targets = todo.get_nowait()
+                        index, module, targets = todo.get_nowait()
                     except queue.Empty:
                         break
-                    done.put(pool.run(name, module, targets))
+                    done.put(pool.run(index, module, targets))
             except BaseException as error:  # raised again by the main thread
                 done.put(error)
             finally:
@@ -391,7 +406,7 @@ def execute(
                 signal.signal(signum, handler)
     if received:  # handled after the last worker had finished
         raise Interrupted(received[0])
-    return outcomes
+    return sorted(outcomes, key=lambda outcome: outcome.index)
 
 
 def take(done: queue.SimpleQueue[T]) -> T:
@@ -409,20 +424,34 @@ def take(done: queue.SimpleQueue[T]) -> T:
 
 
 def remove(root: Path) -> bool:
-    """Delete ``root``, making its directories writable if needed."""
+    """Delete ``root``, making its directories writable if needed.
+
+    Never follows a symbolic link: shutil.rmtree does not, and the retry opens
+    each directory with O_NOFOLLOW, relative to its parent's descriptor.
+    """
     shutil.rmtree(root, ignore_errors=True)
     if not os.path.lexists(root):
         return True
-    with contextlib.suppress(OSError):
-        os.chmod(root, stat.S_IRWXU)
-    for parent, directories, _ in os.walk(root):
-        for directory in directories:
-            path = os.path.join(parent, directory)
-            if not os.path.islink(path):  # never change what a link points at
-                with contextlib.suppress(OSError):
-                    os.chmod(path, stat.S_IRWXU)
+    unlock(str(root))
     shutil.rmtree(root, ignore_errors=True)
     return not os.path.lexists(root)
+
+
+def unlock(name: str, parent: int | None = None) -> None:
+    """Give the owner rwx on directory ``name`` and every directory below it."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    except OSError:
+        return  # a link, gone or unreadable; the caller reports what is left
+    try:
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, stat.S_IRWXU)
+        with os.scandir(fd) as entries:
+            directories = [e.name for e in entries if e.is_dir(follow_symlinks=False)]
+        for directory in directories:
+            unlock(directory, fd)
+    finally:
+        os.close(fd)
 
 
 def line(outcome: Outcome) -> str:
@@ -449,16 +478,16 @@ def shards(coverage: Path) -> list[Path]:
     """The regular files ``coverage run --parallel-mode`` wrote for ``coverage``."""
     prefix = coverage.name
     try:
-        entries = list(os.scandir(coverage.parent))
+        with os.scandir(coverage.parent) as entries:
+            return sorted(
+                Path(entry.path)
+                for entry in entries
+                if entry.name.startswith(prefix)
+                and SHARD.fullmatch(entry.name[len(prefix) :])
+                and entry.is_file(follow_symlinks=False)
+            )
     except FileNotFoundError:
         return []
-    return sorted(
-        Path(entry.path)
-        for entry in entries
-        if entry.name.startswith(prefix)
-        and SHARD.fullmatch(entry.name[len(prefix) :])
-        and entry.is_file(follow_symlinks=False)
-    )
 
 
 def combine(coverage: Path) -> list[str]:
