@@ -817,6 +817,19 @@ ORPHAN = (
 )
 
 
+# Runs the runner in its own session, so killing this process's group does
+# not SIGKILL it; when this process dies it gets SIGTERM instead and stops
+# its workers itself. argv: parent pid, targets.
+INTERRUPTIBLE = (
+    "import ctypes, os, signal, sys\n"
+    "ctypes.CDLL(None).prctl(1, signal.SIGTERM)\n"
+    "if os.getppid() != int(sys.argv[1]):\n"
+    "    sys.exit(1)\n"
+    "os.execv(sys.executable, [sys.executable, '-m', 'scripts.run_tests',"
+    " *sys.argv[2:]])\n"
+)
+
+
 def hangs(marker):
     """A worker that dies with this process, survives SIGUSR1 like a worker
     with the stack dump, starts a grandchild in its own process group (the
@@ -889,8 +902,9 @@ class RealWorkerTests(NestedRootCase):
                 pids = self.base / f"pids-{signum.name}"
                 pids.touch()
                 runner = subprocess.Popen(
-                    [sys.executable, "-m", "scripts.run_tests", *targets],
+                    [sys.executable, "-c", INTERRUPTIBLE, str(os.getpid()), *targets],
                     cwd=REPO,
+                    start_new_session=True,
                     env={**os.environ, PIDS: str(pids)},
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
