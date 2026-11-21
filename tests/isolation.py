@@ -8,15 +8,20 @@ and deletes nothing. Both replace ``pwd.getpwuid`` so
 the production lease resolver, which reads the account home rather than
 ``HOME``, also lands inside the root, and both drop asyncio's load-dependent
 slow-callback warnings so a passing run prints only unittest's own lines.
+SIGUSR1 dumps every thread's stack, which the parallel runner sends to a
+module that hangs before it kills it.
 """
 
 from __future__ import annotations
 
 import atexit
+import contextlib
+import faulthandler
 import logging
 import os
 import pwd
 import shutil
+import signal
 import tempfile
 from pathlib import Path
 
@@ -65,4 +70,7 @@ def install() -> None:
         owner = True
         atexit.register(_remove, root, os.getpid())
     pwd.getpwuid = _getpwuid
+    with contextlib.suppress(AttributeError, OSError, RuntimeError, ValueError):
+        # Fails when stderr is None or has no file descriptor; skip the dump.
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     logging.getLogger("asyncio").addFilter(_fast_enough)

@@ -6,10 +6,12 @@ import ast
 import json
 import os
 import pwd
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -38,7 +40,14 @@ REPORT = (
 
 
 def run(args, *, env=None, cwd=REPO, **kwargs):
-    environ = {**os.environ, "PYTHONPATH": str(REPO), **(env or {})}
+    # A child that owns a root makes it inside this process's root, so it is
+    # deleted with ours even if the child is killed before its own cleanup.
+    environ = {
+        **os.environ,
+        "PYTHONPATH": str(REPO),
+        testroot.TMPBASE: tempfile.gettempdir(),
+        **(env or {}),
+    }
     environ = {key: value for key, value in environ.items() if value is not None}
     return subprocess.run(
         [sys.executable, *args],
@@ -171,6 +180,49 @@ class IsolationTests(unittest.TestCase):
         root, kept = json.loads(result.stdout)
         self.assertTrue(kept)
         self.assertFalse(Path(root).exists())
+
+    def test_sigusr1_dumps_every_threads_stack(self):
+        code = (
+            "import threading, time, tests\n"
+            "threading.Thread(target=time.sleep, args=(60,), daemon=True).start()\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        environ = {**os.environ, "PYTHONPATH": str(REPO)}
+        with subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=REPO,
+            env=environ,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as child:
+            watchdog = threading.Timer(30, child.kill)
+            watchdog.start()
+            try:
+                self.assertEqual(child.stdout.readline(), "ready\n")
+                child.send_signal(signal.SIGUSR1)
+                # One header per thread; EOF means the signal killed it.
+                dump = ""
+                while dump.count("(most recent call first)") < 2:
+                    text = child.stderr.readline()
+                    if not text:
+                        break
+                    dump += text
+            finally:
+                watchdog.cancel()
+                child.kill()
+        self.assertEqual(dump.count("(most recent call first)"), 2, dump)
+        self.assertIn("Current thread", dump)
+
+    def test_guards_install_without_a_usable_stderr(self):
+        for stderr in ("io.StringIO()", "None"):
+            with self.subTest(stderr=stderr):
+                code = (
+                    f"import io, sys\nsys.stderr = {stderr}\nimport tests\nprint('ok')"
+                )
+                result = run(["-c", code])
+                self.assertEqual((result.returncode, result.stdout), (0, "ok\n"))
 
     def test_only_this_account_moves_home(self):
         uid = os.getuid()
