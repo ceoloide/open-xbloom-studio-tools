@@ -1,0 +1,1647 @@
+{
+ "$defs": {
+  "CoffeeExamplesInput": {
+   "additionalProperties": false,
+   "properties": {
+    "flavor": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "origin": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "process": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "region": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "roast": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "roaster": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "variety": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "type": "object"
+  },
+  "CoffeeMatchInput": {
+   "additionalProperties": false,
+   "properties": {
+    "name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "origin": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "roaster": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "variety": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "type": "object"
+  },
+  "GrindRequest": {
+   "additionalProperties": false,
+   "properties": {
+    "duration_s": {
+     "maximum": 120,
+     "minimum": 0.1,
+     "type": "number"
+    },
+    "kind": {
+     "const": "grind",
+     "type": "string"
+    },
+    "name": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "rpm": {
+     "maximum": 120,
+     "minimum": 60,
+     "multipleOf": 1,
+     "type": "number"
+    },
+    "size": {
+     "maximum": 80,
+     "minimum": 1,
+     "multipleOf": 1,
+     "type": "number"
+    }
+   },
+   "required": [
+    "kind",
+    "size",
+    "rpm",
+    "duration_s"
+   ],
+   "type": "object"
+  },
+  "RecipeRequest": {
+   "additionalProperties": false,
+   "properties": {
+    "document": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "kind": {
+     "const": "recipe",
+     "type": "string"
+    },
+    "reference": {
+     "anyOf": [
+      {
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "revision": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "required": [
+    "kind"
+   ],
+   "type": "object"
+  },
+  "RepeatRequest": {
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "repeat",
+     "type": "string"
+    },
+    "operation_id": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "kind",
+    "operation_id"
+   ],
+   "type": "object"
+  },
+  "WaterRequest": {
+   "additionalProperties": false,
+   "properties": {
+    "flow_ml_s": {
+     "default": 3,
+     "maximum": 10,
+     "minimum": 0.1,
+     "type": "number"
+    },
+    "kind": {
+     "const": "water",
+     "type": "string"
+    },
+    "name": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "pattern": {
+     "default": "center",
+     "enum": [
+      "center",
+      "ring",
+      "spiral"
+     ],
+     "type": "string"
+    },
+    "temperature_c": {
+     "maximum": 99,
+     "minimum": 20,
+     "type": "number"
+    },
+    "timeout": {
+     "maximum": 3600,
+     "minimum": 0.1,
+     "type": "number"
+    },
+    "volume_ml": {
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "number"
+    }
+   },
+   "required": [
+    "kind",
+    "volume_ml",
+    "temperature_c"
+   ],
+   "type": "object"
+  }
+ },
+ "tools": {
+  "history_events": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "history",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "after": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "cursor": {
+     "anyOf": [
+      {
+       "maxLength": 16384,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "detail": {
+     "default": "full",
+     "enum": [
+      "compact",
+      "full"
+     ],
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "operation_id": {
+     "anyOf": [
+      {
+       "minLength": 1,
+       "pattern": "\\S",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": []
+  },
+  "history_feedback": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "history",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "ident": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "note": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "rating": {
+     "anyOf": [
+      {
+       "maximum": 5,
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "ident",
+    "note"
+   ]
+  },
+  "history_get": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "history",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "ident": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "ident"
+   ]
+  },
+  "history_list": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "history",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "cursor": {
+     "anyOf": [
+      {
+       "maxLength": 16384,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "detail": {
+     "default": "compact",
+     "enum": [
+      "compact",
+      "full"
+     ],
+     "type": "string"
+    },
+    "liked": {
+     "default": false,
+     "type": "boolean"
+    },
+    "limit": {
+     "default": 25,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "min_rating": {
+     "anyOf": [
+      {
+       "maximum": 5,
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "query": {
+     "default": "",
+     "type": "string"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "enum": [
+        "accepted",
+        "running",
+        "waiting_for_user",
+        "completed",
+        "failed",
+        "stopped",
+        "unknown"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": []
+  },
+  "history_save_recipe": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "history",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "name": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "operation_id": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "name",
+    "operation_id"
+   ]
+  },
+  "machine_capabilities": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {},
+   "read_only_hint": true,
+   "required": []
+  },
+  "machine_command": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "allow_control": {
+     "default": false,
+     "type": "boolean"
+    },
+    "allow_untested": {
+     "default": false,
+     "type": "boolean"
+    },
+    "command": {
+     "enum": [
+      "set_brightness",
+      "set_weight_unit",
+      "set_temperature_unit",
+      "set_pour_pattern",
+      "back_home",
+      "wake",
+      "set_mode",
+      "write_preset",
+      "write_presets",
+      "set_water_source",
+      "read_pour_radius",
+      "read_vibration",
+      "initialize_pour_radius",
+      "set_pour_radius",
+      "set_pour_radius_level",
+      "initialize_vibration",
+      "set_vibration_level",
+      "set_cup_limits",
+      "configure_recipe",
+      "set_preset_count",
+      "set_preset_order",
+      "quit_recipe_preparation",
+      "back_to_normal",
+      "configure_grinder",
+      "configure_brewer",
+      "enter_scale",
+      "tare",
+      "exit_scale"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "command"
+   ]
+  },
+  "machine_connect": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "allow_untested": {
+     "default": false,
+     "type": "boolean"
+    }
+   },
+   "read_only_hint": false,
+   "required": []
+  },
+  "machine_disconnect": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {},
+   "read_only_hint": false,
+   "required": []
+  },
+  "machine_prepare": {
+   "$defs": [
+    "GrindRequest",
+    "RecipeRequest",
+    "RepeatRequest",
+    "WaterRequest"
+   ],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "request": {
+     "discriminator": {
+      "mapping": {
+       "grind": "#/$defs/GrindRequest",
+       "recipe": "#/$defs/RecipeRequest",
+       "repeat": "#/$defs/RepeatRequest",
+       "water": "#/$defs/WaterRequest"
+      },
+      "propertyName": "kind"
+     },
+     "oneOf": [
+      {
+       "$ref": "#/$defs/RecipeRequest"
+      },
+      {
+       "$ref": "#/$defs/RepeatRequest"
+      },
+      {
+       "$ref": "#/$defs/WaterRequest"
+      },
+      {
+       "$ref": "#/$defs/GrindRequest"
+      }
+     ]
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "request"
+   ]
+  },
+  "machine_preset_writes": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "slot": {
+     "anyOf": [
+      {
+       "enum": [
+        "A",
+        "B",
+        "C"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": []
+  },
+  "machine_state": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "detail": {
+     "default": "compact",
+     "enum": [
+      "compact",
+      "full"
+     ],
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": []
+  },
+  "operation_acknowledge": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "operation_id": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "token": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "operation_id",
+    "token"
+   ]
+  },
+  "operation_lookup": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "idempotency_key": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "idempotency_key"
+   ]
+  },
+  "operation_pause_resume": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "operation_id": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "resume": {
+     "default": false,
+     "type": "boolean"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "operation_id"
+   ]
+  },
+  "operation_start": {
+   "$defs": [
+    "GrindRequest",
+    "RecipeRequest",
+    "RepeatRequest",
+    "WaterRequest"
+   ],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "allow_control": {
+     "default": false,
+     "type": "boolean"
+    },
+    "allow_untested": {
+     "default": false,
+     "type": "boolean"
+    },
+    "expected_recipe_sha256": {
+     "anyOf": [
+      {
+       "pattern": "^[0-9a-f]{64}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "idempotency_key": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "request": {
+     "discriminator": {
+      "mapping": {
+       "grind": "#/$defs/GrindRequest",
+       "recipe": "#/$defs/RecipeRequest",
+       "repeat": "#/$defs/RepeatRequest",
+       "water": "#/$defs/WaterRequest"
+      },
+      "propertyName": "kind"
+     },
+     "oneOf": [
+      {
+       "$ref": "#/$defs/RecipeRequest"
+      },
+      {
+       "$ref": "#/$defs/RepeatRequest"
+      },
+      {
+       "$ref": "#/$defs/WaterRequest"
+      },
+      {
+       "$ref": "#/$defs/GrindRequest"
+      }
+     ]
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "idempotency_key",
+    "request"
+   ]
+  },
+  "operation_stop": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "operation_id": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "operation_id"
+   ]
+  },
+  "provider_capabilities": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {},
+   "read_only_hint": true,
+   "required": []
+  },
+  "provider_search": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": true,
+   "properties": {
+    "page": {
+     "default": 1,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "query": {
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "query"
+   ]
+  },
+  "recipe_alias": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "alias": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "alias",
+    "reference"
+   ]
+  },
+  "recipe_archive": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "expected_revision": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "expected_revision",
+    "reference"
+   ]
+  },
+  "recipe_cancel_uploaded": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "allow_control": {
+     "default": false,
+     "type": "boolean"
+    },
+    "token": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "token"
+   ]
+  },
+  "recipe_compare": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "after": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "before": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "after",
+    "before",
+    "reference"
+   ]
+  },
+  "recipe_compile": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "revision": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "reference"
+   ]
+  },
+  "recipe_constraints": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {},
+   "read_only_hint": true,
+   "required": []
+  },
+  "recipe_create": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "document": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "temporary": {
+     "default": false,
+     "type": "boolean"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "document"
+   ]
+  },
+  "recipe_examples": {
+   "$defs": [
+    "CoffeeExamplesInput"
+   ],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "coffee": {
+     "$ref": "#/$defs/CoffeeExamplesInput"
+    },
+    "limit": {
+     "default": 5,
+     "maximum": 20,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "water_ml": {
+     "anyOf": [
+      {
+       "maximum": 1000,
+       "minimum": 1,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "coffee"
+   ]
+  },
+  "recipe_get": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "revision": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "reference"
+   ]
+  },
+  "recipe_import": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": true,
+   "properties": {
+    "flow_ml_s": {
+     "anyOf": [
+      {
+       "maximum": 10,
+       "minimum": 0.1,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "target": {
+     "default": "host",
+     "enum": [
+      "host",
+      "coffee",
+      "tea"
+     ],
+     "type": "string"
+    },
+    "temporary": {
+     "default": false,
+     "type": "boolean"
+    },
+    "url": {
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "url"
+   ]
+  },
+  "recipe_import_export": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "document": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "flow_ml_s": {
+     "anyOf": [
+      {
+       "maximum": 10,
+       "minimum": 0.1,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "target": {
+     "default": "host",
+     "enum": [
+      "host",
+      "coffee",
+      "tea"
+     ],
+     "type": "string"
+    },
+    "temporary": {
+     "default": false,
+     "type": "boolean"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "document"
+   ]
+  },
+  "recipe_import_get": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "ident": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "ident"
+   ]
+  },
+  "recipe_list": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "cursor": {
+     "anyOf": [
+      {
+       "maxLength": 16384,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "detail": {
+     "default": "compact",
+     "enum": [
+      "compact",
+      "full"
+     ],
+     "type": "string"
+    },
+    "include_temporary": {
+     "default": false,
+     "type": "boolean"
+    },
+    "limit": {
+     "default": 25,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "query": {
+     "default": "",
+     "type": "string"
+    }
+   },
+   "read_only_hint": true,
+   "required": []
+  },
+  "recipe_match": {
+   "$defs": [
+    "CoffeeMatchInput"
+   ],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "coffee": {
+     "$ref": "#/$defs/CoffeeMatchInput"
+    },
+    "limit": {
+     "default": 5,
+     "maximum": 25,
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "coffee"
+   ]
+  },
+  "recipe_preview": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "document": {
+     "additionalProperties": true,
+     "type": "object"
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "document"
+   ]
+  },
+  "recipe_refresh": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": true,
+   "properties": {
+    "flow_ml_s": {
+     "anyOf": [
+      {
+       "maximum": 10,
+       "minimum": 0.1,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "target": {
+     "anyOf": [
+      {
+       "enum": [
+        "host",
+        "coffee",
+        "tea"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "reference"
+   ]
+  },
+  "recipe_start_uploaded": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "allow_control": {
+     "default": false,
+     "type": "boolean"
+    },
+    "idempotency_key": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "token": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "idempotency_key",
+    "token"
+   ]
+  },
+  "recipe_tea_references": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "family": {
+     "anyOf": [
+      {
+       "enum": [
+        "green",
+        "black",
+        "oolong",
+        "white",
+        "pu-erh",
+        "herbal",
+        "cascara"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": []
+  },
+  "recipe_tea_validate": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "document": {},
+    "expected_output_ml": {
+     "default": null
+    }
+   },
+   "read_only_hint": true,
+   "required": [
+    "document"
+   ]
+  },
+  "recipe_templates": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {},
+   "read_only_hint": true,
+   "required": []
+  },
+  "recipe_update": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "recipes",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "document": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "expected_revision": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "reference": {
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "document",
+    "expected_revision",
+    "reference"
+   ]
+  },
+  "recipe_upload": {
+   "$defs": [
+    "GrindRequest",
+    "RecipeRequest",
+    "RepeatRequest",
+    "WaterRequest"
+   ],
+   "additionalProperties": false,
+   "destructive_hint": true,
+   "group": "machine",
+   "idempotent_hint": false,
+   "open_world_hint": false,
+   "properties": {
+    "allow_control": {
+     "default": false,
+     "type": "boolean"
+    },
+    "allow_untested": {
+     "default": false,
+     "type": "boolean"
+    },
+    "expected_recipe_sha256": {
+     "anyOf": [
+      {
+       "pattern": "^[0-9a-f]{64}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "request": {
+     "discriminator": {
+      "mapping": {
+       "grind": "#/$defs/GrindRequest",
+       "recipe": "#/$defs/RecipeRequest",
+       "repeat": "#/$defs/RepeatRequest",
+       "water": "#/$defs/WaterRequest"
+      },
+      "propertyName": "kind"
+     },
+     "oneOf": [
+      {
+       "$ref": "#/$defs/RecipeRequest"
+      },
+      {
+       "$ref": "#/$defs/RepeatRequest"
+      },
+      {
+       "$ref": "#/$defs/WaterRequest"
+      },
+      {
+       "$ref": "#/$defs/GrindRequest"
+      }
+     ]
+    }
+   },
+   "read_only_hint": false,
+   "required": [
+    "request"
+   ]
+  },
+  "recipe_validate": {
+   "$defs": [],
+   "additionalProperties": false,
+   "destructive_hint": false,
+   "group": "recipes",
+   "idempotent_hint": true,
+   "open_world_hint": false,
+   "properties": {
+    "document": {}
+   },
+   "read_only_hint": true,
+   "required": [
+    "document"
+   ]
+  }
+ }
+}
