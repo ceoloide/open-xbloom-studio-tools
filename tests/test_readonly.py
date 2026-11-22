@@ -388,6 +388,17 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await anext(Studio(client=client()).monitor_state(**kwargs))
 
+    async def test_monitor_reports_a_session_that_opened_after_its_duration(self):
+        class SlowTransport(FakeTransport):
+            async def connect(self, on_disconnect):
+                await asyncio.sleep(0.02)
+                await super().connect(on_disconnect)
+
+        studio = Studio(client=client(SlowTransport()))
+        updates = [u async for u in studio.monitor_state(duration=0.01)]
+        self.assertEqual(len(updates), 1)
+        self.assertTrue(updates[0]["state"]["session_ready"])
+
     async def test_staleness_and_disconnection(self):
         c = client(stale_after=0.001)
         async with c:
