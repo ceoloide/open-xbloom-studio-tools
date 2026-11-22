@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import os
 import struct
 import subprocess
@@ -23,13 +24,33 @@ from xbloom_studio import (
     plan,
 )
 from xbloom_studio.client import bounded, wait_set
-from xbloom_studio.ownership import AddressLease, lease_directory
+from xbloom_studio.ownership import AddressLease, LeaseBusyError, lease_directory
 from xbloom_studio.transport import BleakTransport
 
 REPO = str(Path(__file__).resolve().parents[1])
 SCALE = reply(20501, struct.pack("<f", 0))
 WATER = reply(40523, struct.pack("<f", 0))
 INFO = reply(40521, identity_block(size=29))
+CONTENDER = """
+import tests, os, sys
+from xbloom_studio.ownership import AddressLease, LeaseBusyError
+key, inside, rounds = sys.argv[1], sys.argv[2], int(sys.argv[3])
+print(flush=True)
+sys.stdin.readline()
+busy = 0
+while rounds:
+    lease = AddressLease(key)
+    try:
+        lease.acquire()
+    except LeaseBusyError:
+        busy += 1
+        continue
+    os.mkdir(inside)
+    os.rmdir(inside)
+    lease.release()
+    rounds -= 1
+print(busy)
+"""
 
 
 class FakeTransport:
@@ -621,7 +642,7 @@ class OwnershipBoundaryTests(unittest.IsolatedAsyncioTestCase):
         # lease and ignores late callbacks from the lost link.
         link, c = scripted("sim-reconnect")
         async with c:
-            handle = c._lease._file
+            handle = c._lease._lock
             stale = link._on_disconnect
             link.drop()
             self.assertFalse(c.snapshot()["connected"])
@@ -632,7 +653,7 @@ class OwnershipBoundaryTests(unittest.IsolatedAsyncioTestCase):
             await c.subscribe()
             await c.open_session()
             self.assertTrue(c.snapshot()["session_ready"])
-            self.assertIs(c._lease._file, handle)
+            self.assertIs(c._lease._lock, handle)
             stale()
             self.assertTrue(c.snapshot()["connected"])
         self.assertFalse(c._lease.held)
@@ -890,7 +911,102 @@ class PlanTests(unittest.TestCase):
             plan("brew")
 
 
+def lock_files():
+    return set(lease_directory().glob("*.lock"))
+
+
 class LeaseTests(unittest.TestCase):
+    def test_release_removes_its_lock_file(self):
+        before = lock_files()
+        for _ in range(5):
+            lease = AddressLease(f"cycle:{uuid.uuid4().hex}")
+            lease.acquire()
+            lease.release()
+        self.assertEqual(lock_files(), before)
+
+    def test_acquire_retries_when_its_file_is_released_before_the_lock(self):
+        key = f"handover:{uuid.uuid4().hex}"
+        holder = AddressLease(key)
+        holder.acquire()
+        flock = fcntl.flock
+
+        def release_first(handle, operation):
+            holder.release()
+            mocked.side_effect = flock
+            flock(handle, operation)
+
+        lease = AddressLease(key)
+        with mock.patch("fcntl.flock", side_effect=release_first) as mocked:
+            lease.acquire()
+        self.addCleanup(lease.release)
+        with self.assertRaises(LeaseBusyError):
+            AddressLease(key).acquire()
+
+    def test_release_spares_a_lock_file_it_does_not_hold(self):
+        key = f"removed:{uuid.uuid4().hex}"
+        first = AddressLease(key)
+        before = lock_files()
+        first.acquire()
+        for path in lock_files() - before:
+            path.unlink()
+        second = AddressLease(key)
+        second.acquire()
+        self.addCleanup(second.release)
+        first.release()
+        with self.assertRaises(LeaseBusyError):
+            AddressLease(key).acquire()
+
+    def test_release_is_quiet_when_its_file_vanishes_before_unlink(self):
+        unlink = os.unlink
+
+        def vanish_first(path):
+            unlink(path)
+            unlink(path)
+
+        self.assert_release_is_quiet(vanish_first)
+
+    def test_release_is_quiet_when_unlink_is_denied(self):
+        self.assert_release_is_quiet(PermissionError)
+
+    def assert_release_is_quiet(self, unlink_effect):
+        key = f"quiet:{uuid.uuid4().hex}"
+        lease = AddressLease(key)
+        lease.acquire()
+        with mock.patch("os.unlink", side_effect=unlink_effect) as unlink:
+            lease.release()
+        unlink.assert_called_once()
+        self.assertFalse(lease.held)
+        successor = AddressLease(key)
+        successor.acquire()
+        successor.release()
+
+    def test_contending_processes_never_hold_one_lease_together(self):
+        key = f"contended:{uuid.uuid4().hex}"
+        before = lock_files()
+        with tempfile.TemporaryDirectory() as shared:
+            inside = os.path.join(shared, "inside")
+            processes = [
+                subprocess.Popen(
+                    [sys.executable, "-c", CONTENDER, key, inside, "300"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env={**os.environ, "PYTHONPATH": REPO},
+                )
+                for _ in range(4)
+            ]
+            for process in processes:
+                process.stdout.readline()
+            for process in processes:
+                process.stdin.write("\n")
+                process.stdin.flush()
+            outcomes = [process.communicate(timeout=60) for process in processes]
+        for process, (_, error) in zip(processes, outcomes, strict=True):
+            self.assertEqual(process.returncode, 0, error)
+        self.assertGreater(sum(int(out) for out, _ in outcomes), 0)
+        self.assertEqual(lock_files(), before)
+
     def test_lease_directory_uses_the_account_home(self):
         with tempfile.TemporaryDirectory() as root:
             with (
