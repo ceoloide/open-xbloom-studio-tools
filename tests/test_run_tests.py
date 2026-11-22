@@ -981,6 +981,14 @@ def hangs(marker, parent=None):
     )
 
 
+def spawn_armed(argv, env, output):
+    process = run_tests.spawn(argv, env, output)
+    log = Path(output.name)
+    while b"\n" not in log.read_bytes() and process.poll() is None:
+        time.sleep(0.01)
+    return process
+
+
 def roles(pids, live=False):
     """The roles recorded in ``pids``; with ``live``, of running processes only."""
     return {
@@ -1120,6 +1128,7 @@ class RealWorkerTests(NestedRootCase):
             {"tests.test_a": ["tests.test_a"]},
             jobs=1,
             out=out,
+            spawn=spawn_armed,
             timeout=2,
             grace=0.2,
             build=lambda targets, data: [sys.executable, "-c", hangs(marker)],
