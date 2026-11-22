@@ -213,8 +213,10 @@ class Studio:
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield bounded-rate snapshots; unavailable/stale values remain explicit.
 
-        Each allowed reconnect can beep. Zero retries is the quiet default. Use
-        contextlib.aclosing when ending an async iteration early.
+        Every opened session yields at least one snapshot, even when opening
+        it took longer than duration. Each allowed reconnect can beep. Zero
+        retries is the quiet default. Use contextlib.aclosing when ending an
+        async iteration early.
         """
         if (
             duration <= 0
@@ -232,7 +234,7 @@ class Studio:
             while time.monotonic() < deadline:
                 try:
                     async with self.client:
-                        while time.monotonic() < deadline:
+                        while True:
                             state = self.client.snapshot()
                             if not state["connected"]:
                                 raise SessionError("Bluetooth disconnected")
@@ -244,6 +246,8 @@ class Studio:
                             await asyncio.sleep(
                                 min(interval, max(0, deadline - time.monotonic()))
                             )
+                            if time.monotonic() >= deadline:
+                                break
                     return
                 except (ConnectionError, TimeoutError, OSError) as exc:
                     yield {
