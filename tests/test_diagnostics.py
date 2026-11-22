@@ -30,7 +30,12 @@ from xbloom_studio.diagnostics import (
 )
 from xbloom_studio.errors import error_detail
 from xbloom_studio.facade import Application
-from xbloom_studio.machine_controls import PresetWriteError, UntestedOperationError
+from xbloom_studio.machine_controls import (
+    ControlPermissionError,
+    ExperimentalOptInError,
+    PresetWriteError,
+    UntestedOperationError,
+)
 from xbloom_studio.mcp_server import create_server
 from xbloom_studio.ownership import LeaseBusyError, LeaseDirectoryError
 from xbloom_studio.preset_writes import PresetWriteRefused
@@ -41,7 +46,7 @@ from xbloom_studio.recipe_validation import (
 )
 from xbloom_studio.rpc import LocalServer, RemoteError, call
 from xbloom_studio.rpc_types import SocketDirectoryError, SocketPathError
-from xbloom_studio.storage import ConflictError, Store
+from xbloom_studio.storage import ConflictError, NotFoundError, Store
 from xbloom_studio.tea_validation import validate_tea_recipe
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -314,9 +319,21 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
             ),
             (BusyError("busy"), "busy", "XB_MACHINE_BUSY"),
             (ConflictError("changed"), "conflict", "XB_CONFLICT"),
-            (KeyError("Recipe not found"), "not_found", "XB_RECIPE_NOT_FOUND"),
-            (KeyError("Operation not found"), "not_found", "XB_OPERATION_NOT_FOUND"),
-            (KeyError("Import not found"), "not_found", "XB_IMPORT_NOT_FOUND"),
+            (
+                NotFoundError("Recipe not found", resource="recipe"),
+                "not_found",
+                "XB_RECIPE_NOT_FOUND",
+            ),
+            (
+                NotFoundError("Operation not found", resource="operation"),
+                "not_found",
+                "XB_OPERATION_NOT_FOUND",
+            ),
+            (
+                NotFoundError("Import not found", resource="import"),
+                "not_found",
+                "XB_IMPORT_NOT_FOUND",
+            ),
             (ProviderError("bad"), "provider_error", "XB_PROVIDER_ERROR"),
             (http_err, "provider_error", "XB_PROVIDER_ERROR"),
             (URLError("offline"), "provider_unavailable", "XB_PROVIDER_UNAVAILABLE"),
@@ -342,12 +359,12 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
                 "XB_JSON_SYNTAX",
             ),
             (
-                ValueError("needs allow_control"),
+                ControlPermissionError("needs allow_control"),
                 "permission_required",
                 "XB_CONTROL_PERMISSION_REQUIRED",
             ),
             (
-                ValueError("needs allow_untested"),
+                ExperimentalOptInError("needs allow_untested"),
                 "experimental_required",
                 "XB_EXPERIMENTAL_REQUIRED",
             ),
@@ -375,11 +392,33 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
                     self.assertNotIn("secret", rendered)
 
     def test_no_fabricated_location_without_context(self):
-        detail = error_detail(KeyError("Recipe not found"))
+        detail = error_detail(NotFoundError("Recipe not found", resource="recipe"))
         self.assertNotIn("location", detail["diagnostic"])
         rendered = render_human_diagnostic(detail)
         self.assertNotIn("Location:", rendered)
         self.assertIn("[XB_RECIPE_NOT_FOUND] Recipe not found", rendered)
+
+    def test_plain_value_error_and_bare_key_error_classify_structurally(self):
+        for message in (
+            "allow_control must be a boolean",
+            "allow_untested must be a boolean",
+            "allow_control and allow_untested must be booleans",
+        ):
+            detail = error_detail(ValueError(message))
+            self.assertEqual(detail["code"], "invalid_argument")
+            self.assertEqual(detail["diagnostic"]["code"], "XB_INVALID_ARGUMENT")
+
+        custom_missing = error_detail(
+            NotFoundError("Custom missing label", resource="recipe")
+        )
+        self.assertEqual(custom_missing["code"], "not_found")
+        self.assertEqual(custom_missing["message"], "Custom missing label")
+        self.assertEqual(custom_missing["diagnostic"]["code"], "XB_RECIPE_NOT_FOUND")
+
+        for bare in (KeyError("Recipe not found"), KeyError("secret")):
+            internal = error_detail(bare, log_unexpected=False)
+            self.assertEqual(internal["code"], "internal_error")
+            self.assertEqual(internal["diagnostic"]["code"], "XB_INTERNAL_ERROR")
 
     def test_remote_peer_sanitization_and_older_peer_compatibility(self):
         older = RemoteError({"code": "not_found", "message": "Recipe not found"})
@@ -1480,7 +1519,7 @@ class SolR1HardeningTests(unittest.IsolatedAsyncioTestCase):
 
     def test_s8_human_repair_guide_labels_checkout_relative_paths(self):
         rendered = render_human_diagnostic(
-            error_detail(KeyError("Recipe not found")),
+            error_detail(NotFoundError("Recipe not found", resource="recipe")),
             context=DiagnosticContext(command="recipe get", parameter="reference"),
         )
         self.assertIn(
