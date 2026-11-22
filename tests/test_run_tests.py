@@ -256,7 +256,7 @@ class RunTests(RepoCase):
                     raise run_tests.queue.Empty
                 return "item"
 
-        self.assertEqual(run_tests.take(Slow()), "item")
+        self.assertEqual(run_tests.take(Slow(), lambda: None), "item")
         self.assertEqual(Slow.calls, [run_tests.POLL] * 3)
 
     def test_signals_to_a_finished_process_are_ignored(self):
@@ -949,6 +949,34 @@ ORPHAN = (
     "    orphaned()\n" + record("grandchild") + "print(os.getpid(), flush=True)\n"
     "time.sleep(120)\n"
 )
+# A grandchild in its own session, outside its worker's group, that does not
+# die with its parent. Its argv only names the marker, for kill_fixture.
+SESSION = (
+    "import os, time\nos.setsid()\nprint(os.getpid(), flush=True)\ntime.sleep(120)\n"
+)
+# A worker that double-forks a daemon, which exits at once, then prints
+# whether the daemon is reaped, so that os.kill no longer finds it, within 10 s.
+DAEMON = (
+    "import os, time\n"
+    "read, write = os.pipe()\n"
+    "if os.fork() == 0:\n"
+    "    if os.fork() == 0:\n"
+    "        os.write(write, str(os.getpid()).encode())\n"
+    "    os._exit(0)\n"
+    "os.wait()\n"
+    "os.close(write)\n"
+    "daemon = int(os.read(read, 20))\n"
+    "deadline = time.monotonic() + 10\n"
+    "while time.monotonic() < deadline:\n"
+    "    try:\n"
+    "        os.kill(daemon, 0)\n"
+    "    except ProcessLookupError:\n"
+    "        print('reaped')\n"
+    "        break\n"
+    "    time.sleep(0.01)\n"
+    "else:\n"
+    "    print('not reaped')\n"
+)
 
 
 # Runs the runner in its own session, so killing this process's group does
@@ -964,17 +992,17 @@ INTERRUPTIBLE = (
 )
 
 
-def hangs(marker, parent=None):
+def hangs(marker, parent=None, grandchild=ORPHAN):
     """A worker that dies with its parent (this process unless given),
-    survives SIGUSR1 like a worker with the stack dump, starts a grandchild
-    in its process group (the worker's) and hangs."""
+    survives SIGUSR1 like a worker with the stack dump, starts ``grandchild``
+    (by default one in its process group, the worker's) and hangs."""
     return (
         "import ctypes, os, signal, subprocess, sys, time\n"
         "ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
         f"if os.getppid() != {parent or os.getpid()}:\n"
         "    sys.exit(1)\n" + record("worker") + "signal.signal(signal.SIGUSR1,"
         " lambda *_: print('dump', flush=True))\n"
-        f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
+        f"grandchild = subprocess.Popen([sys.executable, '-c', {grandchild!r},"
         f" {str(marker)!r}, str(os.getpid())], stdout=subprocess.PIPE, text=True)\n"
         "print(grandchild.stdout.readline().strip(), flush=True)\n"
         "time.sleep(120)\n"
@@ -1100,7 +1128,7 @@ class RealWorkerTests(NestedRootCase):
 
     @unittest.skipUnless(LINUX, "uses prctl and /proc")
     def test_fixtures_exit_when_started_by_an_unexpected_parent(self):
-        # This process's parent is never theirs, nor their reaper.
+        # They are this process's children, so its parent is never theirs.
         wrong = str(os.getppid())
         marker = self.base / "orphaned"
         programs = {
@@ -1144,6 +1172,130 @@ class RealWorkerTests(NestedRootCase):
             time.sleep(0.05)
         self.assertTrue(gone(grandchild))
         self.assertFalse(marker.exists(), "outlived its parent, so not group-killed")
+
+    @unittest.skipUnless(LINUX, "uses prctl and /proc")
+    def test_a_grandchild_in_its_own_session_ends_with_the_run(self):
+        for interrupt in (False, True):
+            with self.subTest("interrupt" if interrupt else "timeout"):
+                self.assertTrue(gone(self.run_with_a_session_grandchild(interrupt)))
+
+    @unittest.skipUnless(LINUX, "uses a subreaper")
+    def test_an_orphan_that_exits_is_reaped_during_the_run(self):
+        [outcome] = run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            build=lambda targets, data: [sys.executable, "-c", DAEMON],
+        )
+        self.assertEqual(outcome.output, "reaped\n")
+
+    def test_a_child_started_before_the_run_outlives_it(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            stdin=subprocess.PIPE,
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.stdin.close)
+        run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=Fake().spawn,
+        )
+        self.assertIsNone(child.poll())
+
+    def test_a_child_that_exited_before_the_run_keeps_its_exit_code(self):
+        child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+        self.addCleanup(child.wait)
+        while not gone(child.pid):
+            time.sleep(0.01)
+        run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=Fake().spawn,
+        )
+        self.assertEqual(child.wait(), 3)
+
+    @unittest.skipUnless(LINUX, "uses /proc")
+    def test_a_worker_that_exits_before_its_wait_keeps_its_exit_code(self):
+        class Late:
+            """A worker waited for only after a few polls."""
+
+            def __init__(self, process):
+                self.process = process
+                self.pid = process.pid
+
+            def wait(self, timeout=None):
+                time.sleep(5 * run_tests.POLL)
+                return self.process.wait(timeout)
+
+        def spawn(argv, env, output):
+            """A worker that has exited a few polls before its spawn returns."""
+            process = run_tests.spawn(argv, env, output)
+            while not gone(process.pid):
+                time.sleep(0.01)
+            time.sleep(5 * run_tests.POLL)
+            return Late(process)
+
+        [outcome] = run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=spawn,
+            build=lambda targets, data: [sys.executable, "-c", "raise SystemExit(3)"],
+        )
+        self.assertEqual(outcome.status, "FAIL")
+
+    def test_a_run_restores_the_subreaper_setting(self):
+        run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=Fake().spawn,
+        )
+        self.assertEqual(run_tests.subreaper(0), 0)
+
+    def test_off_linux_no_subreaper_is_set(self):
+        with mock.patch.object(run_tests, "LINUX", False):
+            self.assertEqual(run_tests.subreaper(1), 0)
+        self.assertEqual(run_tests.subreaper(0), 0)
+
+    def run_with_a_session_grandchild(self, interrupt):
+        """Run a worker whose grandchild is in its own session until it times
+        out or, with ``interrupt``, the run is interrupted; the grandchild's pid."""
+        marker = self.base / "orphaned"
+        grandchildren = []
+
+        def spawn(argv, env, output):
+            process = spawn_armed(argv, env, output)
+            grandchildren.append(int(Path(output.name).read_text()))
+            self.addCleanup(kill_fixture, grandchildren[0], marker)
+            if interrupt:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return process
+
+        def run():
+            return run_tests.execute(
+                {"tests.test_a": ["tests.test_a"]},
+                jobs=1,
+                out=io.StringIO(),
+                spawn=spawn,
+                timeout=60 if interrupt else 2,
+                grace=0.2,
+                build=lambda targets, data: [
+                    sys.executable,
+                    "-c",
+                    hangs(marker, grandchild=SESSION),
+                ],
+                signals=(signal.SIGTERM,),
+            )
+
+        if interrupt:
+            self.assertRaises(run_tests.Interrupted, run)
+        else:
+            self.assertEqual(run()[0].status, "TIMEOUT")
+        return grandchildren[0]
 
     def hang_until_interrupted(self):
         """The interrupt test's target; its fixtures end on their own after 120 s."""

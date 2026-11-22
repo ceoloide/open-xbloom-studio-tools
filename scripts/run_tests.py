@@ -9,13 +9,16 @@ is deleted at the end. A module passes only if it exits 0, runs at least one
 test and prints nothing but unittest's own lines. This script never imports
 the tests: the module list comes from the file names.
 
-Limits: a timeout or an interrupt kills each worker's process group, so a
-descendant that starts its own session survives it. If the runner itself is
+Limits: a timeout or an interrupt kills each worker's process group, which a
+descendant in its own session has left. On Linux the runner adopts orphaned
+descendants, so it kills every descendant left when the run ends, before it
+removes the run root; elsewhere they outlive the run. If the runner itself is
 killed with a signal it cannot catch (SIGKILL) or does not handle (such as
-SIGHUP or SIGQUIT), its workers and run root are left behind. A worker's root
-is exactly as long as the root of a bare ``python -m unittest`` run, so a long
-``XBLOOM_STUDIO_TEST_TMPBASE`` that breaks socket paths here breaks them there
-too: the socket tests allow a base of at most 41 bytes.
+SIGHUP or SIGQUIT), its workers, their descendants and its run root are left
+behind. A worker's root is exactly as long as the root of a bare ``python -m
+unittest`` run, so a long ``XBLOOM_STUDIO_TEST_TMPBASE`` that breaks socket
+paths here breaks them there too: the socket tests allow a base of at most 41
+bytes.
 
 Removing a run root never follows a link and never changes the mode of
 anything but a directory. The runner creates the run root with mode 0700:
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import os
 import queue
 import re
@@ -53,6 +57,9 @@ JOIN = 10.0
 POLL = 0.2
 NOISE_SHOWN = 20
 RERUN = "uv run --locked python -m scripts.run_tests"
+LINUX = sys.platform.startswith("linux")
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 WARNINGS = ["-W", "default", "-W", "error::ResourceWarning"]
 
 RAN = re.compile(r"Ran (\d+) tests? in [0-9.]+s")
@@ -239,6 +246,47 @@ def quietly(send: Signal, pid: int, signum: int) -> None:
         pass
 
 
+def subreaper(flag: int) -> int:
+    """Set whether this process adopts its orphaned descendants; return the
+    previous setting. Only Linux has one: elsewhere this does nothing."""
+    if not LINUX:
+        return 0
+    prctl = ctypes.CDLL(None).prctl
+    previous = ctypes.c_int()
+    prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(previous))
+    prctl(PR_SET_CHILD_SUBREAPER, ctypes.c_ulong(flag))
+    return previous.value
+
+
+def children() -> dict[int, bytes]:
+    """This process's children and their states (``b"Z"``: exited, not yet
+    reaped), as /proc lists them; none without /proc."""
+    found: dict[int, bytes] = {}
+    with contextlib.suppress(FileNotFoundError), os.scandir("/proc") as entries:
+        for entry in entries:
+            with contextlib.suppress(OSError):  # not a process, or one that ended
+                text = Path(entry.path, "stat").read_bytes()
+                state, parent = text.rsplit(b")", 1)[1].split()[:2]
+                if int(parent) == os.getpid():
+                    found[int(entry.name)] = state
+    return found
+
+
+def sweep(keep: set[int]) -> None:
+    """Kill and reap this process's children but ``keep`` until none is left.
+
+    A killed child's orphans become this subreaper's children, for the next
+    round. A child's pid stays its own until it is reaped, so the kill never
+    reaches an unrelated process.
+    """
+    while found := children().keys() - keep:
+        for pid in found:
+            quietly(os.kill, pid, signal.SIGKILL)
+        for pid in found:
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(pid, 0)
+
+
 class Pool:
     """Worker threads that run one module per child process."""
 
@@ -311,6 +359,19 @@ class Pool:
         classify(outcome, code)
         return outcome
 
+    def reap(self, keep: set[int]) -> None:
+        """Reap this process's exited children but ``keep`` and the workers,
+        which their own wait reaps.
+
+        Under the lock no worker starts or is forgotten. A zombie keeps its
+        pid until it is reaped, so the wait never reaches an unrelated process.
+        """
+        with self.lock:
+            exited = {pid for pid, state in children().items() if state == b"Z"}
+            for pid in exited - keep - self.live:
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(pid, os.WNOHANG)
+
     def stop(self) -> None:
         with self.lock:
             self.stopping.set()
@@ -340,6 +401,16 @@ def execute(
     Each of ``signals`` stops the run with ``Interrupted``, after the
     workers are killed and the run root is removed. A root that cannot be
     removed is added to ``problems``.
+
+    On Linux this process adopts its orphaned descendants for the run. It
+    spares the children it had when the run started. Any other child that
+    exits during the run it reaps, unless it is a worker, which its own wait
+    reaps; any left before the removal it kills and reaps. The kernel does
+    not say where an adopted orphan came from, so a caller that runs this in
+    its own process loses to the run every child it gains meanwhile, such as
+    an orphan of a child it already had or a child another thread starts: a
+    ``Popen`` waiting for one may report exit code 0, and one still running
+    at the end is killed.
     """
     done: queue.SimpleQueue[Outcome | BaseException | None] = queue.SimpleQueue()
     received: list[int] = []
@@ -351,6 +422,8 @@ def execute(
         done.put(Interrupted(signum))
 
     previous = {signum: signal.signal(signum, interrupt) for signum in signals}
+    was_subreaper = subreaper(1)
+    keep = set(children())
     run_root: Path | None = None
     pool: Pool | None = None
     threads: list[threading.Thread] = []
@@ -394,7 +467,7 @@ def execute(
             threads.append(thread)
         finished = 0
         while finished < workers:
-            item = take(done)
+            item = take(done, lambda: pool.reap(keep))
             if item is None:
                 finished += 1
             elif isinstance(item, BaseException):
@@ -409,9 +482,11 @@ def execute(
             # A worker still starting a module could add to the root while it goes.
             for thread in threads:
                 thread.join(JOIN)
+            sweep(keep)
             if run_root is not None and not remove(run_root) and problems is not None:
                 problems.append(f"run root not removed: {run_root}")
         finally:
+            subreaper(was_subreaper)
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
     if received:  # handled after the last worker had finished
@@ -419,14 +494,15 @@ def execute(
     return sorted(outcomes, key=lambda outcome: outcome.index)
 
 
-def take(done: queue.SimpleQueue[T]) -> T:
-    """The next item of ``done``.
+def take(done: queue.SimpleQueue[T], idle: Callable[[], None]) -> T:
+    """The next item of ``done``; call ``idle`` before each wait for it.
 
     The kernel may hand a process-directed signal to a worker thread, and
     Python runs the handler only once the main thread wakes up, so wake up
     every ``POLL`` seconds.
     """
     while True:
+        idle()
         try:
             return done.get(timeout=POLL)
         except queue.Empty:
