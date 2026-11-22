@@ -2483,22 +2483,19 @@ class LifecycleRoundFiveTests(unittest.IsolatedAsyncioTestCase):
         bound = 5
         skew = 0
 
-        class InlineSlowWrite(Machine):
+        class LateAfterFirstChunk(Machine):
             overlap = False
 
             async def write(self, data):
                 nonlocal skew
                 await super().write(data)
-                if data[:1] == b"\x58" and data[3:5] == (4510).to_bytes(2, "little"):
-                    # Load can stall the process during a frame before the start.
-                    time.sleep(0.03)
                 if data[:1] == b"\x58" and data[3:5] == (4506).to_bytes(2, "little"):
                     # The write bound passes with no yield before the next
                     # chunk, so its timer callback cannot run yet.
                     skew = bound
 
         clock = SimpleNamespace(monotonic=lambda: time.monotonic() + skew)
-        m = InlineSlowWrite()
+        m = LateAfterFirstChunk()
         with mock.patch.object(control, "time", clock):
             session, result = await self.interrupted_start(m, write_timeout=bound)
             self.assertIn("write_timeout", result["error"])
