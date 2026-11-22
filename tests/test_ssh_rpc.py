@@ -51,7 +51,7 @@ def orphaned(*_):
 # Not SIGTERM: the caller's group termination may send that.
 signal.signal(signal.SIGUSR2, orphaned)
 armed(signal.SIGUSR2, int(sys.argv[1]), "descendant")
-time.sleep(10)
+time.sleep(120)
 """
 )
 FAKE = (
@@ -88,7 +88,7 @@ elif mode == "descendant":
         [sys.executable, "-c", DESCENDANT_SOURCE, str(os.getpid()), orphaned]
     )
     (audit.parent / "descendant").write_text(str(child.pid))
-    time.sleep(10)
+    time.sleep(120)
 elif mode == "truncated":
     sys.stdout.write('{"ok":true,"data":1}')
 elif mode == "malformed":
@@ -211,8 +211,9 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.root / "orphaned").exists())
 
     async def hang_until_interrupted(self):
+        """The interrupt test's target; its fixtures end on their own after 120 s."""
         self.mode("descendant")
-        await ssh_call("host", "service_info")
+        await ssh_call("host", "service_info", timeout=120)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "uses prctl and /proc")
     async def test_the_fake_ssh_dies_with_its_parent(self):

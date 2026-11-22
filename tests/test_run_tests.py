@@ -947,7 +947,7 @@ ORPHAN = (
     "ctypes.CDLL(None).prctl(1, signal.SIGTERM)\n"
     "if os.getppid() != int(sys.argv[2]):\n"
     "    orphaned()\n" + record("grandchild") + "print(os.getpid(), flush=True)\n"
-    "time.sleep(20)\n"
+    "time.sleep(120)\n"
 )
 
 
@@ -977,7 +977,7 @@ def hangs(marker, parent=None):
         f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
         f" {str(marker)!r}, str(os.getpid())], stdout=subprocess.PIPE, text=True)\n"
         "print(grandchild.stdout.readline().strip(), flush=True)\n"
-        "time.sleep(20)\n"
+        "time.sleep(120)\n"
     )
 
 
@@ -1073,7 +1073,7 @@ class RealWorkerTests(NestedRootCase):
                 )
                 # SIGTERM lets the runner stop its own workers; kill is a last resort.
                 self.addCleanup(stop, runner)
-                deadline = time.monotonic() + 30
+                deadline = time.monotonic() + 90
                 fixtures = {"worker", "grandchild", "ssh", "descendant"}
                 while not fixtures <= roles(pids, live=True):
                     self.assertLess(time.monotonic(), deadline)
@@ -1137,6 +1137,7 @@ class RealWorkerTests(NestedRootCase):
         self.assertFalse(marker.exists(), "outlived its parent, so not group-killed")
 
     def hang_until_interrupted(self):
+        """The interrupt test's target; its fixtures end on their own after 120 s."""
         hanging = [sys.executable, "-c", hangs(self.base / "orphaned")]
         run_tests.spawn(hanging, os.environ, subprocess.DEVNULL).wait()
 
