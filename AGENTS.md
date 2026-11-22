@@ -6,7 +6,7 @@ exist, every module is in the map, and the file is at most 150 lines.
 
 The package `xbloom_studio` is the `xbloom-studio` command, its daemon and the
 `xbloom-studio-mcp` server for xBloom Studio machines. Tests are offline, with a
-simulated machine. Python 3.10 to 3.14; `uv run --locked` syncs .venv from the
+simulated machine. Python 3.14 and 3.15; `uv run --locked` syncs .venv from the
 committed `uv.lock`. Run everything from the repository root.
 
 ## Commands
@@ -24,7 +24,7 @@ UPDATE_CONTRACTS=1 uv run --locked python -m unittest tests.test_contracts  # re
 The oldest supported Python, in a second environment that `.gitignore` covers:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=.venv-310 uv run --locked --python 3.10 python -m scripts.presubmit --fast
+UV_PROJECT_ENVIRONMENT=.venv-314 uv run --locked --python 3.14 python -m scripts.presubmit --fast
 ```
 
 The command line from source, against the simulator, with the test guards:
@@ -54,7 +54,7 @@ line per failure and a `fix:` line where one exists. `--fast` and `--only` are
 exclusive; `--only` adds the steps the named ones need. With a stale lockfile
 `uv run --locked` stops before presubmit starts, so the lockfile rerun line
 uses `uv run --frozen`. CI (`.github/workflows/ci.yml`) runs the full
-presubmit on Python 3.10-3.14.
+presubmit on Python 3.14 and 3.15.
 
 ### Test runner
 

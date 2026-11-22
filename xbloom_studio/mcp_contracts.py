@@ -12,7 +12,7 @@ import inspect
 import operator
 from collections.abc import Callable
 from copy import deepcopy
-from typing import Annotated, Any, Literal, Union, cast, get_type_hints
+from typing import Annotated, Any, Literal, cast, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
@@ -45,7 +45,7 @@ def list_of(item: Any) -> Any:
 
 
 def optional(item: Any) -> Any:
-    return Union[item, None]  # noqa: UP007 - runtime construction
+    return item | None
 
 
 def one_of(*items: Any) -> Any:

@@ -14,7 +14,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any
 
@@ -607,7 +607,7 @@ class Interaction(MachineControls, ReadOnlyClient):
         code, payload = packet.command, packet.payload
         event = {
             "revision": self._event_revision,
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": datetime.now(UTC).isoformat(),
             "command": code,
             "payload": payload.hex(),
         }
@@ -890,9 +890,8 @@ class Interaction(MachineControls, ReadOnlyClient):
             bound = self.write_timeout + (
                 STOP_HOOK_TIMEOUT if code in STOP_COMMANDS else 0
             )
-            # The one task that owns the connector for this frame. No wait_for
-            # wrapper: on Python 3.10/3.11 cancelling one while it drains its
-            # inner write returns early and would release the link.
+            # The one task that owns the connector for this frame. _drain keeps
+            # the link held until the inner write finishes even on cancellation.
             write_deadline = time.monotonic() + bound
             finished_at = write_deadline
 
@@ -915,7 +914,7 @@ class Interaction(MachineControls, ReadOnlyClient):
                 if not cancelled:
                     write.result()
                 if expired == ["write"] or finished_at >= write_deadline:
-                    raise asyncio.TimeoutError(
+                    raise TimeoutError(
                         "Write did not finish within write_timeout; delivery unknown"
                     )
                 budget_expired = expired == ["budget"] or (
@@ -936,16 +935,15 @@ class Interaction(MachineControls, ReadOnlyClient):
                     if left < wait:
                         wait, budgeted = max(0.0, left), True
                 progress.deadline = now + wait
-                # wait_for can swallow cancellation racing with a completed ACK
-                # on Python 3.10/3.11. wait preserves it and leaves cleanup below
-                # responsible for the shared ACK future.
+                # asyncio.wait leaves cleanup below responsible for the shared
+                # ACK future without cancelling it on timeout.
                 done, _ = await asyncio.wait({future}, timeout=wait)
                 if not done:
                     if budgeted:
                         raise TimeoutError(
                             "Acknowledgment not received within the command budget"
                         )
-                    raise asyncio.TimeoutError()
+                    raise TimeoutError()
                 return future.result()
             except BaseException as exc:
                 # A missing ACK leaves command effects uncertain; never retry.
@@ -1691,7 +1689,7 @@ class Interaction(MachineControls, ReadOnlyClient):
         code = PAUSE_RESUME_CODES[op.kind][int(resume)]
         try:
             await self._command(code, active_operation=op)
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             # An uncertain pause/resume must not leave an unattended operation.
             await self.stop()
             raise

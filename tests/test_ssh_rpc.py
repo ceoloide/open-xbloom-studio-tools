@@ -104,7 +104,7 @@ async def exited(pid, timeout=3.0):
         try:
             if status.read_text().rsplit(")", 1)[1].split()[0] == "Z":
                 return True
-        except (FileNotFoundError, ProcessLookupError):  # gone while reading
+        except FileNotFoundError, ProcessLookupError:  # gone while reading
             return True
         await asyncio.sleep(0.01)
     return False
@@ -285,21 +285,8 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_closed_input_is_uncertain(self):
         self.mode("closed")
-        spawn, processes = asyncio.create_subprocess_exec, []
-
-        async def spawned(*args, **kwargs):
-            processes.append(await spawn(*args, **kwargs))
-            return processes[-1]
-
-        with (
-            patch.object(asyncio, "create_subprocess_exec", spawned),
-            self.assertRaisesRegex(ConnectionError, "connection closed"),
-        ):
+        with self.assertRaisesRegex(ConnectionError, "connection closed"):
             await ssh_call("host", "recipe_validate", {"document": "x" * 1_000_000})
-        # Python 3.10 never retrieves the stdin-closed error and logs it when
-        # the future is freed; retrieve it here.
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            await processes[0].stdin.wait_closed()
 
 
 class StdIO:

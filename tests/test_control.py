@@ -562,7 +562,7 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         async with interaction(m) as session:
             op = await session.start_recipe(EncodedRecipe(b"example", 10))
             await transmitted(m, 8002)
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session.pause()
             self.assertTrue(op.done)
             self.assertTrue(op.stop_acknowledged)
@@ -867,7 +867,7 @@ class PreparedRecipeTests(unittest.IsolatedAsyncioTestCase):
         m.studio.silent.add(8017)
         async with interaction(m) as session:
             prepared = await session.upload_recipe(EncodedRecipe(b"x", 10))
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session.cancel_prepared(prepared["token"])
             self.assertEqual(
                 session.get_state()["last_preparation"]["reason"], "cancel_failed"
@@ -1154,7 +1154,7 @@ class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
         hooks.before_write = lambda packet, raw: _emit(m, packet.command)
         async with interaction(m) as session:
             session.transport.hooks = hooks
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session._command(8022)
             self.assertEqual(m.codes()[-1], 8022)
 
@@ -1167,7 +1167,7 @@ class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
         m = Early()
         m.studio.silent.add(8102)
         async with interaction(m) as session:
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session._command(8102, b"\0" * 12)
             self.assertEqual(len(m.writes[-2]), 20)
             m.studio.silent.clear()
@@ -1183,7 +1183,7 @@ class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
             transition_delay=0,
             ack_timeout=0.03,
         ) as session:
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session._command(
                     8022, before_write=lambda: fake.machine.emit(8022)
                 )
@@ -1395,7 +1395,7 @@ class LifecycleRoundTwoTests(unittest.IsolatedAsyncioTestCase):
 
         async with interaction(m) as session:
             session.transport.event_sink = stale_ack
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session._command(8022)
             self.assertEqual(m.codes()[-1], 8022)
 

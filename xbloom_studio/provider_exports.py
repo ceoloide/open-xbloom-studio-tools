@@ -165,7 +165,7 @@ def read_export(
     }
     try:
         source["raw"] = decode({"mapValue": {"fields": sanitized["fields"]}})
-    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+    except ValueError, KeyError, TypeError, AttributeError, OverflowError:
         source.update(
             raw=None,
             decode_error="Invalid or unsupported Firestore typed value in export",

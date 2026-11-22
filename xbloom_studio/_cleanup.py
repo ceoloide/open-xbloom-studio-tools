@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TypeVar
-
-T = TypeVar("T")
 
 
-async def wait_cleanup(cleanup: asyncio.Future[T]) -> T:
+async def wait_cleanup[T](cleanup: asyncio.Future[T]) -> T:
     """Wait for ``cleanup`` to finish even if the caller is cancelled meanwhile.
 
     Teardown owns its session until it finishes, even if its RPC caller

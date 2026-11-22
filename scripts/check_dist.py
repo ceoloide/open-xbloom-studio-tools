@@ -38,7 +38,7 @@ from scripts import publication_policy
 PROJECT = "xbloom-studio"
 PACKAGE = "xbloom_studio"
 LICENSE_EXPRESSION = "MIT"
-REQUIRES_PYTHON = ">=3.10"
+REQUIRES_PYTHON = ">=3.14"
 WHEEL_TAG = "py3-none-any"
 COMPARED_FIELDS = (
     "Name",
@@ -369,7 +369,7 @@ def entry_points(raw: bytes) -> dict[str, dict[str, str]]:
     parser.optionxform = str  # type: ignore[assignment,method-assign]
     try:
         parser.read_string(raw.decode("utf-8"))
-    except (configparser.Error, UnicodeDecodeError):
+    except configparser.Error, UnicodeDecodeError:
         return {}
     return {name: dict(parser[name]) for name in parser.sections()}
 

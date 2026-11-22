@@ -781,17 +781,16 @@ class FailedIdTests(unittest.TestCase):
         outcome.output = "\n".join(lines)
         return run_tests.failed_ids(outcome)
 
-    def test_both_header_forms_give_the_full_test_id(self):
+    def test_header_gives_the_full_test_id(self):
         expected = ["tests.test_x.C.test_y"]
         self.assertEqual(self.ids("FAIL: test_y (tests.test_x.C.test_y)"), expected)
-        self.assertEqual(self.ids("ERROR: test_y (tests.test_x.C)"), expected)
+        self.assertEqual(self.ids("ERROR: test_y (tests.test_x.C.test_y)"), expected)
 
     def test_subtests_are_folded_into_one_id(self):
         ids = self.ids(
             "FAIL: test_y (tests.test_x.C.test_y) [first]",
             "FAIL: test_y (tests.test_x.C.test_y) (n=2)",
-            "FAIL: test_y (tests.test_x.C) [first]",
-            "ERROR: test_z (tests.test_x.C)",
+            "ERROR: test_z (tests.test_x.C.test_z)",
         )
         self.assertEqual(ids, ["tests.test_x.C.test_y", "tests.test_x.C.test_z"])
 
@@ -1043,7 +1042,7 @@ def kill_fixture(pid, marker):
     """SIGKILL ``pid`` only while it is still the fixture that names ``marker``."""
     try:
         command = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except (FileNotFoundError, ProcessLookupError):
+    except FileNotFoundError, ProcessLookupError:
         return
     if os.fsencode(marker) in command and not gone(pid):
         with suppress(ProcessLookupError):
@@ -1054,7 +1053,7 @@ def gone(pid):
     """Whether ``pid`` has exited (a zombie counts)."""
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (FileNotFoundError, ProcessLookupError):  # gone while reading
+    except FileNotFoundError, ProcessLookupError:  # gone while reading
         return True
     return state in ("Z", "X")
 

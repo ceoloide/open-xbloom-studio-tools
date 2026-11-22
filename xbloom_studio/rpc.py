@@ -61,7 +61,7 @@ def socket_path_exists(path: Path, *, follow_symlinks: bool = True) -> bool:
     with _socket_path_errors():
         try:
             os.stat(path, follow_symlinks=follow_symlinks)
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError, NotADirectoryError:
             return False
     return True
 
@@ -109,7 +109,7 @@ async def call(
 
     try:
         return await asyncio.wait_for(exchange(), timeout)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise ConnectionError(
             "Local RPC timed out; inspect operation_lookup with the original key "
             "before any new start"
@@ -269,7 +269,7 @@ class LocalServer:
                 encoded = self._too_large(request, result, response["ok"])
             writer.write(encoded)
             await asyncio.wait_for(writer.drain(), 5)
-        except (ConnectionError, asyncio.TimeoutError):
+        except ConnectionError, TimeoutError:
             pass
         finally:
             try:

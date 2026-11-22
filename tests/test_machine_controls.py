@@ -319,7 +319,7 @@ class UntestedTests(Base):
         m = Machine()
         m.studio.silent.add(11512)
         async with interaction(m, allow_untested=True) as session:
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session.set_preset_order(
                     "BAC", backup_order="ABC", backup_path=self.path()
                 )
@@ -332,7 +332,7 @@ class UntestedTests(Base):
         async with interaction(m, allow_untested=True, ack_timeout=0.02) as session:
             result = await session.quit_recipe_preparation()
             self.assertEqual(result["command"], 8017)
-            with self.assertRaises(asyncio.TimeoutError):
+            with self.assertRaises(TimeoutError):
                 await session.back_to_normal()
         self.assertEqual(m.codes()[1:], [8017, 40526])
 

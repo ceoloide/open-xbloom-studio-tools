@@ -168,7 +168,7 @@ class NativeRecipeTest(unittest.TestCase):
                 try:
                     EncodedRecipe(b"\xab", content["dose_g"], **options)
                     accepted = True
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     accepted = False
                 self.assertEqual(accepted, valid)
         report = check_recipe(native())

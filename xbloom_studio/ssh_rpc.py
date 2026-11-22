@@ -117,7 +117,7 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
         pass
     try:
         await asyncio.wait_for(process.wait(), 2)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
     # A leader can exit while descendants keep its pipes; always retire its group.
     try:
@@ -215,7 +215,7 @@ async def ssh_call(
 
     try:
         return await asyncio.wait_for(exchange(), timeout)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise ConnectionError("SSH RPC timed out; " + UNCERTAIN) from exc
     finally:
         try:

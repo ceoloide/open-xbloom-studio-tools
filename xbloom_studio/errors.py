@@ -7,7 +7,6 @@ No guidance ever suggests automatically repeating a physical action.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
@@ -519,7 +518,7 @@ def error_detail(
                 location=location,
             ),
         )
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
+    if isinstance(exc, (TimeoutError, ConnectionError)):
         message = "The daemon or transport did not complete the request."
         next_step = (
             "Check operation_lookup with the original idempotency key, "

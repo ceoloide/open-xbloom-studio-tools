@@ -149,16 +149,17 @@ class TestRootTests(unittest.TestCase):
             testroot.create(self.environ)
         mkdtemp.assert_called_once_with(prefix=testroot.PREFIX, dir=self.base)
 
-    def test_relative_mkdtemp_result_becomes_absolute(self):
-        # Python 3.10 and 3.11 return a relative path when the default is ".".
-        for bases in ([None], ["/unused", None]):
-            with (
-                self.subTest(bases=bases),
-                mock.patch.object(testroot, "bases", return_value=bases),
-                mock.patch.object(testroot.tempfile, "mkdtemp", return_value="xbs-rel"),
-            ):
-                root = testroot.create({})
-            self.assertEqual(root, Path.cwd() / "xbs-rel")
+    def test_mkdtemp_result_is_absolute_even_for_relative_default(self):
+        with (
+            mock.patch.object(testroot, "bases", return_value=[None]),
+            mock.patch.object(testroot.tempfile, "tempdir", "."),
+        ):
+            root = testroot.create({})
+        try:
+            self.assertTrue(root.is_absolute())
+            self.assertEqual(root.parent, Path.cwd())
+        finally:
+            root.rmdir()
 
     def test_environment_makes_and_names_the_layout(self):
         variables = testroot.environment(self.root)
