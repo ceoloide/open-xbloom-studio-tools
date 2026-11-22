@@ -5,10 +5,9 @@ each `sh` command parses against the script it runs, cited paths and modules
 exist, every module is in the map, and the file is at most 150 lines.
 
 The package `xbloom_studio` is the `xbloom-studio` command, its daemon and the
-`xbloom-studio-mcp` server for xBloom Studio machines. Tests are offline and use
-a simulated machine. Python 3.10 to 3.14; uv with the committed `uv.lock`, so
-`uv run --locked` creates and syncs .venv itself. Run everything from the
-repository root.
+`xbloom-studio-mcp` server for xBloom Studio machines. Tests are offline, with a
+simulated machine. Python 3.10 to 3.14; `uv run --locked` syncs .venv from the
+committed `uv.lock`. Run everything from the repository root.
 
 ## Commands
 
@@ -19,7 +18,7 @@ uv run --locked python -m scripts.presubmit --only lint types
 uv run --locked python -m scripts.run_tests tests.test_cli   # one module
 uv run --locked python -m scripts.run_tests tests.test_cli.PureCommandTests.test_interrupt_exits_130
 uv run --locked python -m unittest tests.test_cli    # serial, one process; for pdb
-UPDATE_CONTRACTS=1 uv run --locked python -m unittest tests.test_contracts  # rewrite the MCP golden
+UPDATE_CONTRACTS=1 uv run --locked python -m unittest tests.test_contracts  # rewrite the MCP golden; fails if it changed
 ```
 
 The oldest supported Python, in a second environment that `.gitignore` covers:
@@ -53,8 +52,9 @@ distribution (needs build). A failing step does not stop the run; a step whose
 producer failed is `skipped (needs X)`. The run ends with a table, a `rerun:`
 line per failure and a `fix:` line where one exists. `--fast` and `--only` are
 exclusive; `--only` adds the steps the named ones need. With a stale lockfile
-`uv run --locked` stops before presubmit starts, so that rerun line uses
-`uv run --frozen`. CI (`.github/workflows/ci.yml`) runs it on Python 3.10-3.14.
+`uv run --locked` stops before presubmit starts, so the lockfile rerun line
+uses `uv run --frozen`. CI (`.github/workflows/ci.yml`) runs the full
+presubmit on Python 3.10-3.14.
 
 ### Test runner
 
@@ -95,8 +95,7 @@ can fail under heavy load. Rerun it before chasing it.
 - Agent skills and README examples match the shipped CLI and MCP tools
   (`tests.test_skills`); the built sdist and wheel have exactly the expected
   files and pass an installed probe (`scripts.check_dist`).
-- MCP tool inputs match `tests/contracts/mcp_tools.json` (`tests.test_contracts`);
-  a golden diff is explained in the PR body.
+- MCP tool inputs match `tests/contracts/mcp_tools.json` (`tests.test_contracts`).
 
 ## Policy no check enforces
 
@@ -108,6 +107,7 @@ can fail under heavy load. Rerun it before chasing it.
   `ReviewRegressionTests`.
 - Keep `scripts` at 100 % line and branch coverage, and do not lower the
   package's.
+- Change the MCP golden only on purpose, and explain its diff in the PR body.
 
 ## Environment
 

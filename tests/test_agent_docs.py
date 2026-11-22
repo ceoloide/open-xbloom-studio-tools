@@ -31,7 +31,7 @@ PATH = re.compile(r"[\w.:-]+(?:/[\w.:-]+)*/?")
 SUFFIX = re.compile(r"\.(?:json|lock|md|py|toml|yml)")
 LINE_NUMBER = re.compile(r":\d+(?:-\d+)?$")
 ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)")
-VARIABLES = {"UV_PROJECT_ENVIRONMENT", "UPDATE_CONTRACTS", testroot.TMPBASE}
+VARIABLES = {"UV_PROJECT_ENVIRONMENT", testroot.TMPBASE}
 TMPBASE_BYTES = 26
 PYTHONS = {"3.10", "3.11", "3.12", "3.13", "3.14"}
 UNKNOWN = "not a known command"
@@ -145,7 +145,7 @@ def check_command(line: str) -> str | None:
         words = split(line)
     except ValueError as error:
         return str(error)
-    if not words:
+    if not words or shlex.join(words) == UPDATE:
         return None
     while words and (assignment := ASSIGNMENT.fullmatch(words[0])):
         name, value = assignment.groups()
@@ -386,6 +386,10 @@ class CheckerTests(unittest.TestCase):
             "uv run --locked --python 3.9 python -m scripts.presubmit": "--python",
             "uv run --locked --python": "--python",
             "FOO=1 python -m scripts.presubmit": "unexpected variable FOO",
+            "UPDATE_CONTRACTS=1 uv run --locked python -m scripts.presubmit": (
+                "unexpected variable UPDATE_CONTRACTS"
+            ),
+            UPDATE.replace("=1", "=0"): "unexpected variable UPDATE_CONTRACTS",
             "XBLOOM_STUDIO_TEST_ROOT=x python -m scripts.presubmit": (
                 "unexpected variable XBLOOM_STUDIO_TEST_ROOT"
             ),

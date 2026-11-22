@@ -18,7 +18,11 @@ UPDATE = "UPDATE_CONTRACTS=1 uv run --locked python -m unittest tests.test_contr
 HINTS = ("read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint")
 TOP_LEVEL = {"type", "title", "properties", "required", "$defs", "additionalProperties"}
 # Values that are data, not schemas: a "title" inside them is kept.
-DATA = {"const", "default", "enum", "examples"}
+DATA = {"const", "default", "enum", "examples", "discriminator"}
+# Maps from a name to a schema: every name is kept, every value is a schema.
+NAMED = {"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"}
+# Python 3.10 turns ``x: Any = None`` into ``Optional[Any]``; 3.11+ give ``{}``.
+OPTIONAL_ANY = ([{}, {"type": "null"}], [{"type": "null"}, {}])
 
 
 async def _noop(method: str, params: dict[str, Any]) -> Any:
@@ -28,19 +32,23 @@ async def _noop(method: str, params: dict[str, Any]) -> Any:
 def strip(schema: Any) -> Any:
     """``schema`` without any string-valued ``title`` or ``description`` key.
 
-    An ``anyOf`` with an unconstrained ``{}`` branch accepts anything, so it
-    is dropped: Python 3.10 turns ``x: Any = None`` into ``Optional[Any]``.
+    ``anyOf: [{}, {"type": "null"}]`` accepts anything, as ``{}`` does, so it
+    is dropped; every other union is kept.
     """
     if isinstance(schema, list):
         return [strip(item) for item in schema]
     if not isinstance(schema, dict):
         return schema
-    stripped = {
-        key: value if key in DATA else strip(value)
-        for key, value in schema.items()
-        if not (key in ("title", "description") and isinstance(value, str))
-    }
-    if {} in stripped.get("anyOf", ()):
+    stripped = {}
+    for key, value in schema.items():
+        if key in ("title", "description") and isinstance(value, str):
+            continue
+        if key in NAMED and isinstance(value, dict):
+            value = {name: strip(item) for name, item in value.items()}
+        elif key not in DATA:
+            value = strip(value)
+        stripped[key] = value
+    if stripped.get("anyOf") in OPTIONAL_ANY:
         del stripped["anyOf"]
     return stripped
 
@@ -53,12 +61,18 @@ def project(listed: dict[str, tuple[str, Any]]) -> dict[str, Any]:
     for name, (group, tool) in sorted(listed.items()):
         schema = dict(tool.input_schema)
         if name == "machine_command":
-            schema.pop("oneOf")  # command_schema(), pinned by test_command_schema
+            if "oneOf" not in schema:
+                raise AssertionError(f"MCP tool {name}: no top-level oneOf")
+            del schema["oneOf"]  # command_schema(), pinned by test_command_schema
         unknown = sorted(set(schema) - TOP_LEVEL)
         if unknown:
             raise AssertionError(f"MCP tool {name}: unexpected top-level {unknown}")
-        for key, value in strip(schema.get("$defs", {})).items():
-            if key in defs and defs[key] != value:
+        for key in ("properties", "additionalProperties"):
+            if key not in schema:
+                raise AssertionError(f"MCP tool {name}: no top-level {key}")
+        schema = strip(schema)
+        for key, value in schema.get("$defs", {}).items():
+            if key in defs and first_difference(defs[key], value) is not None:
                 raise AssertionError(
                     f"$defs {key} differs between {owners[key]} and {name}"
                 )
@@ -68,7 +82,7 @@ def project(listed: dict[str, tuple[str, Any]]) -> dict[str, Any]:
             **{hint: getattr(tool.annotations, hint) for hint in HINTS},
             "required": sorted(schema.get("required", [])),
             "additionalProperties": schema["additionalProperties"],
-            "properties": strip(schema["properties"]),
+            "properties": schema["properties"],
             "$defs": sorted(schema.get("$defs", {})),
         }
     return {"$defs": defs, "tools": tools}
@@ -92,9 +106,10 @@ def first_difference(old: Any, new: Any, path: str = "") -> str | None:
     """The JSON pointer of the first place ``new`` differs from ``old``."""
     if isinstance(old, dict) and isinstance(new, dict):
         for key in sorted(set(old) | set(new)):
+            here = f"{path}/{key.replace('~', '~0').replace('/', '~1')}"
             if key not in old or key not in new:
-                return f"{path}/{key}"
-            found = first_difference(old[key], new[key], f"{path}/{key}")
+                return here
+            found = first_difference(old[key], new[key], here)
             if found is not None:
                 return found
         return None
@@ -130,14 +145,26 @@ class ContractTests(unittest.TestCase):
     def test_tool_inputs_match_the_golden(self):
         document = current()
         text = json.dumps(document, indent=1, sort_keys=True) + "\n"
+        saved = GOLDEN.read_text() if GOLDEN.exists() else None
         if os.environ.get("UPDATE_CONTRACTS") == "1":
-            GOLDEN.parent.mkdir(exist_ok=True)
-            GOLDEN.write_text(text)
-        golden = json.loads(GOLDEN.read_text())
+            if saved != text:
+                GOLDEN.parent.mkdir(exist_ok=True)
+                GOLDEN.write_text(text)
+                self.fail(
+                    f"golden rewritten: review the diff of {GOLDEN.name}, explain"
+                    " it in the PR body, and rerun without UPDATE_CONTRACTS"
+                )
+            return
+        hint = f"If the change is intended, run: {UPDATE}"
+        try:
+            golden = json.loads(saved or "")
+        except ValueError:
+            self.fail(f"{GOLDEN.name} is missing or not JSON\n{hint}")
         problem = mismatch(golden, document)
         if problem is not None:
-            self.fail(f"{problem}\nIf the change is intended, run: {UPDATE}")
-        self.assertEqual(GOLDEN.read_text(), text)
+            self.fail(f"{problem}\n{hint}")
+        if saved != text:
+            self.fail(f"{GOLDEN.name} is not in its canonical format\n{hint}")
 
 
 class ProjectionTests(unittest.TestCase):
@@ -152,17 +179,38 @@ class ProjectionTests(unittest.TestCase):
             {"properties": {"title": {"type": "string"}}, "default": {"title": "data"}},
         )
 
-    def test_strip_drops_an_anyof_that_accepts_anything(self):
-        optional_any = {"anyOf": [{}, {"type": "null"}], "default": None}
-        self.assertEqual(strip(optional_any), {"default": None})
-        optional_int = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
-        self.assertEqual(strip(optional_int), optional_int)
+    def test_strip_keeps_names_and_strips_values_of_named_maps(self):
+        named = {"title": "Title", "type": "string"}
+        schema = {
+            "properties": {key: named for key in ("default", "examples", "anyOf")},
+            "discriminator": {"mapping": {"title": "#/$defs/A"}},
+        }
+        self.assertEqual(
+            strip(schema),
+            {
+                "properties": {
+                    key: {"type": "string"} for key in ("default", "examples", "anyOf")
+                },
+                "discriminator": {"mapping": {"title": "#/$defs/A"}},
+            },
+        )
+
+    def test_strip_drops_only_an_optional_any(self):
+        for branches in OPTIONAL_ANY:
+            optional_any = {"anyOf": branches, "default": None}
+            self.assertEqual(strip(optional_any), {"default": None})
+        for kept in (
+            [{}, {"type": "integer"}],
+            [{"type": "integer"}, {"type": "null"}],
+        ):
+            self.assertEqual(strip({"anyOf": kept}), {"anyOf": kept})
 
     def test_first_difference_is_a_json_pointer(self):
         self.assertEqual(first_difference({"a": [1, 2]}, {"a": [1, 3]}), "/a/1")
         self.assertEqual(first_difference({"a": [1]}, {"a": [1, 2]}), "/a/1")
         self.assertEqual(first_difference({"a": 1}, {"b": 1}), "/a")
         self.assertEqual(first_difference(1, True), "/")
+        self.assertEqual(first_difference({"a/b~": 1}, {"a/b~": 2}), "/a~1b~0")
         self.assertIsNone(first_difference({"a": [1]}, {"a": [1]}))
 
     def test_unknown_top_level_key_fails(self):
@@ -181,6 +229,31 @@ class ProjectionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssertionError, "Water differs between a and b"):
             project({"a": ("recipes", fake(a)), "b": ("recipes", fake(b))})
+
+    def test_defs_that_differ_only_in_json_type_conflict(self):
+        a, b = (
+            {
+                "properties": {},
+                "additionalProperties": False,
+                "$defs": {"Flag": {"const": value}},
+            }
+            for value in (True, 1)
+        )
+        with self.assertRaisesRegex(AssertionError, "Flag differs between a and b"):
+            project({"a": ("recipes", fake(a)), "b": ("recipes", fake(b))})
+
+    def test_missing_top_level_keys_name_the_tool(self):
+        cases = {
+            "recipe_get": ({"properties": {}}, "no top-level additionalProperties"),
+            "machine_command": (
+                {"properties": {}, "additionalProperties": False},
+                "no top-level oneOf",
+            ),
+        }
+        for name, (schema, message) in cases.items():
+            with self.subTest(tool=name):
+                with self.assertRaisesRegex(AssertionError, f"{name}: {message}"):
+                    project({name: ("machine", fake(schema))})
 
 
 def fake(schema: dict[str, Any]) -> Any:
