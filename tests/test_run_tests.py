@@ -954,6 +954,29 @@ ORPHAN = (
 SESSION = (
     "import os, time\nos.setsid()\nprint(os.getpid(), flush=True)\ntime.sleep(120)\n"
 )
+# A worker that double-forks a daemon, which exits at once, then prints
+# whether the daemon is reaped, so that os.kill no longer finds it, within 10 s.
+DAEMON = (
+    "import os, time\n"
+    "read, write = os.pipe()\n"
+    "if os.fork() == 0:\n"
+    "    if os.fork() == 0:\n"
+    "        os.write(write, str(os.getpid()).encode())\n"
+    "    os._exit(0)\n"
+    "os.wait()\n"
+    "os.close(write)\n"
+    "daemon = int(os.read(read, 20))\n"
+    "deadline = time.monotonic() + 10\n"
+    "while time.monotonic() < deadline:\n"
+    "    try:\n"
+    "        os.kill(daemon, 0)\n"
+    "    except ProcessLookupError:\n"
+    "        print('reaped')\n"
+    "        break\n"
+    "    time.sleep(0.01)\n"
+    "else:\n"
+    "    print('not reaped')\n"
+)
 
 
 # Runs the runner in its own session, so killing this process's group does
@@ -1155,6 +1178,16 @@ class RealWorkerTests(NestedRootCase):
         for interrupt in (False, True):
             with self.subTest("interrupt" if interrupt else "timeout"):
                 self.assertTrue(gone(self.run_with_a_session_grandchild(interrupt)))
+
+    @unittest.skipUnless(LINUX, "uses a subreaper")
+    def test_an_orphan_that_exits_is_reaped_during_the_run(self):
+        [outcome] = run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            build=lambda targets, data: [sys.executable, "-c", DAEMON],
+        )
+        self.assertEqual(outcome.output, "reaped\n")
 
     def test_a_child_started_before_the_run_outlives_it(self):
         child = subprocess.Popen(
