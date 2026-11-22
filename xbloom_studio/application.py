@@ -28,7 +28,12 @@ from .connector import Connector, normalize_identity
 from .control import BusyError, Interaction
 from .journal import JournalHooks, Recorder
 from .machine_api import MachineCommandAPI, encoded_step
-from .machine_controls import EncodedTeaRecipe, UntestedOperationError
+from .machine_controls import (
+    ControlPermissionError,
+    EncodedTeaRecipe,
+    ExperimentalOptInError,
+    UntestedOperationError,
+)
 from .ownership import AddressLease
 from .recipes import (
     HistoryService,
@@ -351,8 +356,10 @@ class MachineService(MachineCommandAPI):
     ) -> dict[str, Any]:
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise ValueError("A nonempty idempotency key is required")
-        if allow_control is not True:
-            raise ValueError("Starting requires allow_control=True")
+        if type(allow_control) is not bool:
+            raise ValueError("allow_control must be a boolean")
+        if not allow_control:
+            raise ControlPermissionError("Starting requires allow_control=True")
         if type(allow_untested) is not bool:
             raise ValueError("allow_untested must be a boolean")
         self._reject_queued_write()
@@ -381,7 +388,7 @@ class MachineService(MachineCommandAPI):
                     "Prepared recipe changed; preview it again before starting"
                 )
             if plan["requires_untested"] and not allow_untested:
-                raise ValueError("Recipe requires allow_untested")
+                raise ExperimentalOptInError("Recipe requires allow_untested")
             plan.pop("resolved_request", None)  # Preview routing, not history.
             await self._connect(allow_untested)
             return await self._accept_and_launch(request, plan, idempotency_key)

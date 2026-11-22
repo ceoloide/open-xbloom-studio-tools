@@ -22,13 +22,18 @@ from xbloom_studio.command_schema import CommandValidationError
 from xbloom_studio.control import BusyError
 from xbloom_studio.errors import error_detail
 from xbloom_studio.facade import Application
-from xbloom_studio.machine_controls import PresetWriteError, UntestedOperationError
+from xbloom_studio.machine_controls import (
+    ControlPermissionError,
+    ExperimentalOptInError,
+    PresetWriteError,
+    UntestedOperationError,
+)
 from xbloom_studio.ownership import AddressLease, LeaseDirectoryError
 from xbloom_studio.providers import ProviderError
 from xbloom_studio.recipe_validation import RecipeValidationError
 from xbloom_studio.rpc import LocalServer, RemoteError, call, default_socket
 from xbloom_studio.rpc_types import SocketPathError
-from xbloom_studio.storage import ConflictError, Store
+from xbloom_studio.storage import ConflictError, NotFoundError, Store
 
 
 class WireTests(unittest.TestCase):
@@ -93,7 +98,7 @@ class ErrorContractTests(unittest.TestCase):
             ),
             (BusyError("m"), "busy"),
             (ConflictError("m"), "conflict"),
-            (KeyError("Operation not found"), "not_found"),
+            (NotFoundError("Operation not found", resource="operation"), "not_found"),
             (ProviderError("m"), "provider_error"),
             (http_error, "provider_error"),
             (URLError("down"), "provider_unavailable"),
@@ -103,8 +108,8 @@ class ErrorContractTests(unittest.TestCase):
             (ConnectionRefusedError("x"), "connection_unavailable"),
             (TimeoutError("x"), "connection_unavailable"),
             (json.JSONDecodeError("m", "doc", 0), "invalid_argument"),
-            (ValueError("needs allow_control"), "permission_required"),
-            (ValueError("needs allow_untested"), "experimental_required"),
+            (ControlPermissionError("needs allow_control"), "permission_required"),
+            (ExperimentalOptInError("needs allow_untested"), "experimental_required"),
             (TypeError("bad"), "invalid_argument"),
         ]
         for exc, code in cases:
@@ -232,6 +237,165 @@ class LocalServerTests(ServerCase):
         await server.close()
         await server.close()
         self.assertFalse(self.path.exists())
+
+    async def test_non_boolean_permission_flags_report_invalid_argument_over_rpc(self):
+        water = {"kind": "water", "volume_ml": 50, "temperature_c": 20}
+        native = {
+            "kind": "recipe",
+            "document": {
+                "name": "N",
+                "mode": "native",
+                "native": {"payload_hex": "0102", "dose_g": 15},
+            },
+        }
+        untested_recipe = {
+            "kind": "recipe",
+            "document": {
+                "name": "UntestedNative",
+                "mode": "native",
+                "native": {
+                    "payload_hex": "0102",
+                    "dose_g": 15,
+                    "grinder_enabled": True,
+                },
+            },
+        }
+        server = await LocalServer(self.app, self.path).start()
+        try:
+            invalid_cases = (
+                ("machine_connect", {"allow_untested": "yes"}),
+                (
+                    "operation_start",
+                    {"request": water, "idempotency_key": "k1", "allow_control": "yes"},
+                ),
+                (
+                    "operation_start",
+                    {
+                        "request": water,
+                        "idempotency_key": "k2",
+                        "allow_control": True,
+                        "allow_untested": "yes",
+                    },
+                ),
+                (
+                    "machine_command",
+                    {
+                        "command": "set_brightness",
+                        "params": {"level": 5},
+                        "allow_control": "yes",
+                    },
+                ),
+                (
+                    "machine_command",
+                    {
+                        "command": "set_brightness",
+                        "params": {"level": 5},
+                        "allow_control": True,
+                        "allow_untested": "yes",
+                    },
+                ),
+                ("recipe_upload", {"request": native, "allow_control": "yes"}),
+                (
+                    "recipe_upload",
+                    {
+                        "request": native,
+                        "allow_control": True,
+                        "allow_untested": "yes",
+                    },
+                ),
+                (
+                    "recipe_start_uploaded",
+                    {"token": "t", "idempotency_key": "k3", "allow_control": "yes"},
+                ),
+                ("recipe_cancel_uploaded", {"token": "t", "allow_control": "yes"}),
+            )
+            for method, params in invalid_cases:
+                with (
+                    self.subTest(method=method, params=params),
+                    self.assertRaises(RemoteError) as caught,
+                ):
+                    await call(self.path, method, params)
+                self.assertEqual(caught.exception.detail["code"], "invalid_argument")
+                self.assertEqual(
+                    caught.exception.detail["diagnostic"]["code"],
+                    "XB_INVALID_ARGUMENT",
+                )
+
+            permission_cases = (
+                (
+                    "operation_start",
+                    {"request": water, "idempotency_key": "k4", "allow_control": False},
+                ),
+                (
+                    "machine_command",
+                    {
+                        "command": "set_brightness",
+                        "params": {"level": 5},
+                        "allow_control": False,
+                    },
+                ),
+                ("recipe_upload", {"request": native, "allow_control": False}),
+                (
+                    "recipe_start_uploaded",
+                    {"token": "t", "idempotency_key": "k5", "allow_control": False},
+                ),
+                ("recipe_cancel_uploaded", {"token": "t", "allow_control": False}),
+            )
+            for method, params in permission_cases:
+                with (
+                    self.subTest(method=method, params=params),
+                    self.assertRaises(RemoteError) as caught,
+                ):
+                    await call(self.path, method, params)
+                self.assertEqual(caught.exception.detail["code"], "permission_required")
+                self.assertEqual(
+                    caught.exception.detail["diagnostic"]["code"],
+                    "XB_CONTROL_PERMISSION_REQUIRED",
+                )
+
+            experimental_cases = (
+                (
+                    "operation_start",
+                    {
+                        "request": untested_recipe,
+                        "idempotency_key": "k6",
+                        "allow_control": True,
+                        "allow_untested": False,
+                    },
+                ),
+                (
+                    "machine_command",
+                    {
+                        "command": "set_cup_limits",
+                        "params": {"minimum": 40, "maximum": 80},
+                        "allow_control": True,
+                        "allow_untested": False,
+                    },
+                ),
+                (
+                    "recipe_upload",
+                    {
+                        "request": untested_recipe,
+                        "allow_control": True,
+                        "allow_untested": False,
+                    },
+                ),
+            )
+            for method, params in experimental_cases:
+                with (
+                    self.subTest(method=method, params=params),
+                    self.assertRaises(RemoteError) as caught,
+                ):
+                    await call(self.path, method, params)
+                self.assertEqual(
+                    caught.exception.detail["code"], "experimental_required"
+                )
+                self.assertEqual(
+                    caught.exception.detail["diagnostic"]["code"],
+                    "XB_EXPERIMENTAL_REQUIRED",
+                )
+        finally:
+            await server.close()
 
     async def test_invalid_and_oversized_lines_get_error_envelopes(self):
         server = await LocalServer(self.app, self.path).start()

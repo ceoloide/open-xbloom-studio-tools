@@ -17,10 +17,14 @@ from tests.frames import reply, u32
 from tests.machine import Machine, expect_shielded_failures, until
 from xbloom_studio.application import MachineService, RecordingConnector
 from xbloom_studio.client import SessionError
-from xbloom_studio.control import BusyError
+from xbloom_studio.control import BusyError, Interaction
 from xbloom_studio.errors import error_detail
 from xbloom_studio.journal import Recorder
 from xbloom_studio.machine_api import same_attempt, same_request
+from xbloom_studio.machine_controls import (
+    ControlPermissionError,
+    ExperimentalOptInError,
+)
 from xbloom_studio.ownership import LeaseBusyError
 from xbloom_studio.preset_writes import (
     CLOSE_PENDING,
@@ -318,6 +322,87 @@ class AdmissionTests(ServiceCase):
         self.assertEqual(self.machine.calls, [])
         self.assertEqual(self.store.history(), [])
         self.assertIsNone(self.service.state()["machine"])
+
+    async def test_non_boolean_and_denied_permission_flags_distinguish_exceptions(self):
+        with self.assertRaises(ValueError) as bad_interaction:
+            Interaction(connector=self.machine, allow_control="yes")
+        self.assertEqual(
+            error_detail(bad_interaction.exception)["diagnostic"]["code"],
+            "XB_INVALID_ARGUMENT",
+        )
+
+        invalid_calls = (
+            self.service.connect(allow_untested="yes"),
+            self.service.start(WATER, "inv-1", allow_control="yes"),
+            self.service.start(
+                WATER, "inv-2", allow_control=True, allow_untested="yes"
+            ),
+            self.service.command("set_brightness", {"level": 5}, allow_control="yes"),
+            self.service.command(
+                "set_brightness", {"level": 5}, allow_control=True, allow_untested="yes"
+            ),
+            self.service.upload(NATIVE, allow_control="yes"),
+            self.service.upload(NATIVE, allow_control=True, allow_untested="yes"),
+            self.service.start_uploaded("t", "inv-3", allow_control="yes"),
+            self.service.cancel_uploaded("t", allow_control="yes"),
+        )
+        for idx, coro in enumerate(invalid_calls):
+            with self.subTest(kind="invalid_type", idx=idx):
+                with self.assertRaises(ValueError) as caught:
+                    await coro
+                self.assertNotIsInstance(
+                    caught.exception, (ControlPermissionError, ExperimentalOptInError)
+                )
+                detail = error_detail(caught.exception)
+                self.assertEqual(detail["code"], "invalid_argument")
+                self.assertEqual(detail["diagnostic"]["code"], "XB_INVALID_ARGUMENT")
+
+        denied_calls = (
+            self.service.start(WATER, "perm-1", allow_control=False),
+            self.service.command("set_brightness", {"level": 5}, allow_control=False),
+            self.service.upload(NATIVE, allow_control=False),
+            self.service.start_uploaded("t", "perm-2", allow_control=False),
+            self.service.cancel_uploaded("t", allow_control=False),
+        )
+        for idx, coro in enumerate(denied_calls):
+            with self.subTest(kind="permission_denied", idx=idx):
+                with self.assertRaises(ControlPermissionError) as caught:
+                    await coro
+                detail = error_detail(caught.exception)
+                self.assertEqual(detail["code"], "permission_required")
+                self.assertEqual(
+                    detail["diagnostic"]["code"], "XB_CONTROL_PERMISSION_REQUIRED"
+                )
+
+        untested_recipe = {
+            "kind": "recipe",
+            "document": {
+                "name": "UntestedNative",
+                "mode": "native",
+                "native": {
+                    "payload_hex": "0102",
+                    "dose_g": 15,
+                    "grinder_enabled": True,
+                },
+            },
+        }
+        experimental_calls = (
+            self.service.start(untested_recipe, "exp-1", allow_control=True),
+            self.service.command(
+                "set_cup_limits", {"minimum": 40, "maximum": 80}, allow_control=True
+            ),
+            self.service.upload(untested_recipe, allow_control=True),
+        )
+        for idx, coro in enumerate(experimental_calls):
+            with self.subTest(kind="experimental_required", idx=idx):
+                with self.assertRaises(ExperimentalOptInError) as caught:
+                    await coro
+                detail = error_detail(caught.exception)
+                self.assertEqual(detail["code"], "experimental_required")
+                self.assertEqual(
+                    detail["diagnostic"]["code"], "XB_EXPERIMENTAL_REQUIRED"
+                )
+        self.assertEqual(self.machine.calls, [])
 
     async def test_idempotent_replay_returns_the_attempt_and_never_rewrites(self):
         row = self.store.create_recipe(

@@ -26,13 +26,18 @@ from .diagnostics import (
     sanitize_remote_error,
     validation_diagnostic,
 )
-from .machine_controls import PresetWriteError, UntestedOperationError
+from .machine_controls import (
+    ControlPermissionError,
+    ExperimentalOptInError,
+    PresetWriteError,
+    UntestedOperationError,
+)
 from .ownership import LeaseBusyError, LeaseDirectoryError
 from .preset_writes import PresetWriteRefused
 from .providers import ProviderError
 from .recipe_validation import RecipeValidationError
 from .rpc_types import RemoteError, SocketDirectoryError, SocketPathError
-from .storage import ConflictError
+from .storage import ConflictError, NotFoundError, NotFoundResource
 
 CODES = frozenset(
     {
@@ -62,15 +67,11 @@ FIELDS = (
     "correlation_id",
     "diagnostic",
 )
-NOT_FOUND = frozenset(
-    {
-        "Recipe not found",
-        "Recipe revision not found",
-        "Operation not found",
-        "Import not found",
-        "Source import not found",
-    }
-)
+_NOT_FOUND_DIAGNOSTIC_CODES: dict[NotFoundResource, str] = {
+    "recipe": "XB_RECIPE_NOT_FOUND",
+    "operation": "XB_OPERATION_NOT_FOUND",
+    "import": "XB_IMPORT_NOT_FOUND",
+}
 
 
 def _detail(
@@ -239,7 +240,25 @@ def error_detail(
             {"preset_write": exc.write},
             diagnostic=diag,
         )
-    if isinstance(exc, UntestedOperationError):
+    if isinstance(exc, ControlPermissionError):
+        message = str(exc)
+        next_step = (
+            "Confirm the user explicitly asked for this physical action, then "
+            "pass `--allow-control` (`allow_control=true`)."
+        )
+        return _detail(
+            name,
+            "permission_required",
+            message,
+            next_step,
+            diagnostic=build_diagnostic(
+                "XB_CONTROL_PERMISSION_REQUIRED",
+                cause=message,
+                fix=next_step,
+                location=location,
+            ),
+        )
+    if isinstance(exc, (UntestedOperationError, ExperimentalOptInError)):
         message = str(exc)
         next_step = (
             "Only set allow_untested=true if experimental behavior is explicitly "
@@ -388,24 +407,13 @@ def error_detail(
                 "XB_CONFLICT", cause=message, fix=next_step, location=location
             ),
         )
-    if (
-        isinstance(exc, KeyError)
-        and exc.args
-        and type(exc.args[0]) is str
-        and exc.args[0] in NOT_FOUND
-    ):
-        message = exc.args[0]
+    if isinstance(exc, NotFoundError):
+        message = str(exc.args[0])
         next_step = (
             "Search recipe_list/history_list or retained imports, then use the "
             "exact ID and revision."
         )
-        diag_code = (
-            "XB_RECIPE_NOT_FOUND"
-            if message.startswith("Recipe")
-            else "XB_OPERATION_NOT_FOUND"
-            if message.startswith("Operation")
-            else "XB_IMPORT_NOT_FOUND"
-        )
+        diag_code = _NOT_FOUND_DIAGNOSTIC_CODES[exc.resource]
         return _detail(
             name,
             "not_found",
@@ -594,22 +602,18 @@ def error_detail(
         )
     if type(exc) in (ValueError, TypeError):
         message = str(exc)
-        if "allow_control" in message:
-            code, diag_code = "permission_required", "XB_CONTROL_PERMISSION_REQUIRED"
-        elif "allow_untested" in message:
-            code, diag_code = "experimental_required", "XB_EXPERIMENTAL_REQUIRED"
-        else:
-            code, diag_code = "invalid_argument", "XB_INVALID_ARGUMENT"
         next_step = (
             "Check tool parameter choices/bounds and machine_capabilities; use "
             "recipe_validate for full recipe diagnostics."
         )
         return _detail(
             name,
-            code,
+            "invalid_argument",
             message,
             next_step,
-            diagnostic=build_diagnostic(diag_code, cause=message, location=location),
+            diagnostic=build_diagnostic(
+                "XB_INVALID_ARGUMENT", cause=message, location=location
+            ),
         )
     detail = _internal(context)
     if log_unexpected:

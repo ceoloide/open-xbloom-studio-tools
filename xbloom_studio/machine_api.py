@@ -28,7 +28,9 @@ from .control import IDLE_STATES, NO_WATER_STATE, BusyError, EncodedRecipe, Inte
 from .diagnostics import preset_write_diagnostic
 from .machine_controls import (
     SLOTS,
+    ControlPermissionError,
     EncodedTeaRecipe,
+    ExperimentalOptInError,
     MachineControls,
     PresetWriteError,
     SavedPreset,
@@ -333,8 +335,10 @@ class MachineCommandAPI:
         *,
         allow_untested: bool = False,
     ) -> dict[str, Any]:
-        if allow_control is not True:
-            raise ValueError("Machine commands require allow_control")
+        if type(allow_control) is not bool:
+            raise ValueError("allow_control must be a boolean")
+        if not allow_control:
+            raise ControlPermissionError("Machine commands require allow_control")
         if type(allow_untested) is not bool:
             raise ValueError("allow_untested must be a boolean")
         values = command_parameters(command, {} if params is None else params)
@@ -346,7 +350,7 @@ class MachineCommandAPI:
             )
         )
         if experimental and not allow_untested:
-            raise ValueError("Command requires allow_untested")
+            raise ExperimentalOptInError("Command requires allow_untested")
         self._reject_queued_write()
         async with self.guard:
             self._require_unoccupied()
@@ -753,8 +757,10 @@ class MachineCommandAPI:
         expected_recipe_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Pin and upload one native step. Does not send an execute command."""
-        if allow_control is not True:
-            raise ValueError("Upload requires allow_control")
+        if type(allow_control) is not bool:
+            raise ValueError("allow_control must be a boolean")
+        if not allow_control:
+            raise ControlPermissionError("Upload requires allow_control")
         if type(allow_untested) is not bool:
             raise ValueError("allow_untested must be a boolean")
         self._reject_queued_write()
@@ -777,7 +783,7 @@ class MachineCommandAPI:
             # the plan's own requires_untested still governs a direct start.
             untested = upload_requires_untested(plan)
             if untested and not allow_untested:
-                raise ValueError("Recipe requires allow_untested")
+                raise ExperimentalOptInError("Recipe requires allow_untested")
             validated = plan["requires_untested"] and not untested
             # Without the opt-in, that exemption holds only for the reviewed
             # preview: its digest pins the exact content before any connection.
@@ -831,8 +837,10 @@ class MachineCommandAPI:
         self, token: str, idempotency_key: str, allow_control: bool = False
     ) -> dict[str, Any]:
         """Start the pinned upload once. Replayed keys retrieve its recorded attempt."""
-        if allow_control is not True:
-            raise ValueError("Starting requires allow_control")
+        if type(allow_control) is not bool:
+            raise ValueError("allow_control must be a boolean")
+        if not allow_control:
+            raise ControlPermissionError("Starting requires allow_control")
         if not isinstance(token, str) or not token:
             raise ValueError("A preparation token is required")
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
@@ -864,8 +872,10 @@ class MachineCommandAPI:
     async def cancel_uploaded(
         self, token: str, allow_control: bool = False
     ) -> dict[str, Any]:
-        if allow_control is not True:
-            raise ValueError("Canceling requires allow_control")
+        if type(allow_control) is not bool:
+            raise ValueError("allow_control must be a boolean")
+        if not allow_control:
+            raise ControlPermissionError("Canceling requires allow_control")
         self._reject_queued_write()
         async with self.guard:
             self._require_open()

@@ -11,14 +11,24 @@ import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .migrations import migrate
 from .pagination import Pagination, integer, search_text
 from .recipes import validate_recipe
 from .serialization import digest, dumps, now
 
-__all__ = ["ConflictError", "Store", "default_db", "digest", "dumps", "now"]
+__all__ = [
+    "ConflictError",
+    "NotFoundError",
+    "Store",
+    "default_db",
+    "digest",
+    "dumps",
+    "now",
+]
+
+NotFoundResource = Literal["recipe", "operation", "import"]
 
 ACTIVE_STATUSES = ("accepted", "running", "waiting_for_user")
 TERMINAL_STATUSES = ("completed", "failed", "stopped", "unknown")
@@ -34,6 +44,12 @@ def default_db() -> Path:
 
 class ConflictError(ValueError):
     pass
+
+
+class NotFoundError(KeyError):
+    def __init__(self, message: str, *, resource: NotFoundResource) -> None:
+        self.resource = resource
+        super().__init__(message)
 
 
 def _loads(value: str | None) -> Any:
@@ -171,14 +187,14 @@ class Store(Pagination):
                     raise ConflictError("Recipe name is ambiguous; use its ID")
                 row = matches[0] if matches else None
             if row is None:
-                raise KeyError("Recipe not found")
+                raise NotFoundError("Recipe not found", resource="recipe")
             version = revision if revision is not None else row["head"]
             rev = self.db.execute(
                 "SELECT * FROM revisions WHERE recipe_id=? AND revision=?",
                 (row["id"], version),
             ).fetchone()
             if rev is None:
-                raise KeyError("Recipe revision not found")
+                raise NotFoundError("Recipe revision not found", resource="recipe")
             return {
                 **dict(row),
                 "revision": version,
@@ -429,7 +445,7 @@ class Store(Pagination):
                 "SELECT * FROM operations WHERE id=?", (ident,)
             ).fetchone()
             if row is None:
-                raise KeyError("Operation not found")
+                raise NotFoundError("Operation not found", resource="operation")
             result = dict(row)
             for key in ("request", "plan", "result"):
                 result[key] = _loads(result[key])
@@ -458,7 +474,7 @@ class Store(Pagination):
                 "SELECT status,result FROM operations WHERE id=?", (ident,)
             ).fetchone()
             if row is None:
-                raise KeyError("Operation not found")
+                raise NotFoundError("Operation not found", resource="operation")
             if row["status"] in TERMINAL_STATUSES:
                 if (row["status"], row["result"]) == (status, encoded):
                     return
@@ -601,7 +617,7 @@ class Store(Pagination):
                 "SELECT * FROM imports WHERE id=?", (ident,)
             ).fetchone()
         if row is None:
-            raise KeyError("Source import not found")
+            raise NotFoundError("Source import not found", resource="import")
         result = dict(row)
         for key in ("source", "document"):
             result[key] = _loads(result[key])

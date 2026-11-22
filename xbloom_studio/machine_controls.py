@@ -36,6 +36,14 @@ PATTERNS = {"center": 0, "ring": 1, "spiral": 2}
 SLOTS = ("A", "B", "C")
 
 
+class ControlPermissionError(ValueError):
+    pass
+
+
+class ExperimentalOptInError(ValueError):
+    pass
+
+
 class UntestedOperationError(SessionError):
     pass
 
