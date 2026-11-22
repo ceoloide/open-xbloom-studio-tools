@@ -128,7 +128,7 @@ include a canonical `diagnostic` object.
 ## XB_SOCKET_PATH_TOO_LONG
 
 - **Machine code:** `invalid_argument`
-- **Meaning:** The Unix domain socket path passed via `--socket` (or `XDG_RUNTIME_DIR`) exceeds the operating system's `AF_UNIX` path-length limit.
+- **Meaning:** The Unix domain socket path exceeds the operating system's `AF_UNIX` path-length limit. The path is `--socket` when given, else `$XDG_RUNTIME_DIR/xbloom-studio/daemon.sock`, else `~/.local/state/xbloom-studio/run/daemon.sock`, so a long home directory alone can trigger it.
 - **Location:** Daemon or client CLI command invoking the local socket.
 - **Fix:** Choose a shorter `--socket` path inside a private `0700` directory and use that same path for both `xbloom-studio serve` and clients.
 
