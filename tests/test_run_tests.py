@@ -949,9 +949,8 @@ ORPHAN = (
     "    orphaned()\n" + record("grandchild") + "print(os.getpid(), flush=True)\n"
     "time.sleep(120)\n"
 )
-# A grandchild in its own session, so outside its worker's group, that does
-# not die with its parent. It ignores its argv, which names the marker for
-# kill_fixture. Prints its pid once in its session.
+# A grandchild in its own session, outside its worker's group, that does not
+# die with its parent. Its argv only names the marker, for kill_fixture.
 SESSION = (
     "import os, time\nos.setsid()\nprint(os.getpid(), flush=True)\ntime.sleep(120)\n"
 )
@@ -1106,7 +1105,7 @@ class RealWorkerTests(NestedRootCase):
 
     @unittest.skipUnless(LINUX, "uses prctl and /proc")
     def test_fixtures_exit_when_started_by_an_unexpected_parent(self):
-        # This process's parent is never theirs, nor their reaper.
+        # They are this process's children, so its parent is never theirs.
         wrong = str(os.getppid())
         marker = self.base / "orphaned"
         programs = {
@@ -1156,6 +1155,35 @@ class RealWorkerTests(NestedRootCase):
         for interrupt in (False, True):
             with self.subTest("interrupt" if interrupt else "timeout"):
                 self.assertTrue(gone(self.run_with_a_session_grandchild(interrupt)))
+
+    def test_a_child_started_before_the_run_outlives_it(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            stdin=subprocess.PIPE,
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.stdin.close)
+        run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=Fake().spawn,
+        )
+        self.assertIsNone(child.poll())
+
+    def test_a_run_restores_the_subreaper_setting(self):
+        run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=Fake().spawn,
+        )
+        self.assertEqual(run_tests.subreaper(0), 0)
+
+    def test_off_linux_no_subreaper_is_set(self):
+        with mock.patch.object(run_tests, "LINUX", False):
+            self.assertEqual(run_tests.subreaper(1), 0)
+        self.assertEqual(run_tests.subreaper(0), 0)
 
     def run_with_a_session_grandchild(self, interrupt):
         """Run a worker whose grandchild is in its own session until it times

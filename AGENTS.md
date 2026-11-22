@@ -63,9 +63,11 @@ most `--jobs` at once (default min(4, CPUs)). A module's result is `ok`,
 `FAIL`, `EMPTY` (no tests ran), `NOISE` (a line that is not unittest's own) or
 `TIMEOUT` (300 s; it dumps every thread's stack, then kills the module's
 process group). A failed module gets a `rerun:` line: the failed test IDs
-where it can read them, else the module. Known limits: a descendant that starts
-its own session survives the kill; a runner killed by SIGKILL, SIGHUP or SIGQUIT
-leaves its workers and run root (`xbs-r-*` under /dev/shm or /tmp) to delete.
+where it can read them, else the module. On Linux the runner adopts orphaned
+descendants and kills any left, such as one in its own session, when the run
+ends. Known limits: off Linux those outlive the run; a runner killed by
+SIGKILL, SIGHUP or SIGQUIT leaves its workers and run root (`xbs-r-*` under
+/dev/shm or /tmp) to delete.
 
 ## Rules enforced by a check
 
