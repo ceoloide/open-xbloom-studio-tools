@@ -642,7 +642,7 @@ class OwnershipBoundaryTests(unittest.IsolatedAsyncioTestCase):
         # lease and ignores late callbacks from the lost link.
         link, c = scripted("sim-reconnect")
         async with c:
-            handle = c._lease._file
+            handle = c._lease._lock
             stale = link._on_disconnect
             link.drop()
             self.assertFalse(c.snapshot()["connected"])
@@ -653,7 +653,7 @@ class OwnershipBoundaryTests(unittest.IsolatedAsyncioTestCase):
             await c.subscribe()
             await c.open_session()
             self.assertTrue(c.snapshot()["session_ready"])
-            self.assertIs(c._lease._file, handle)
+            self.assertIs(c._lease._lock, handle)
             stale()
             self.assertTrue(c.snapshot()["connected"])
         self.assertFalse(c._lease.held)
