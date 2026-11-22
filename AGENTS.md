@@ -90,8 +90,8 @@ can fail under heavy load. Rerun it before chasing it.
   (`scripts.run_tests`).
 - Style and types: `ruff format`, `ruff check` and strict mypy over the package
   and `scripts` (the `format`, `lint` and `types` steps; see `pyproject.toml`).
-- Coverage: at least 90 % line and branch coverage for each of `xbloom_studio`
-  and `scripts` (`scripts.check_coverage`).
+- Coverage: 90 % line and branch per root (`xbloom_studio`, `scripts`), and
+  60 % line, 50 % branch per file of 20+ statements (`scripts.check_coverage`).
 - Agent skills and README examples match the shipped CLI and MCP tools
   (`tests.test_skills`); the built sdist and wheel have exactly the expected
   files and pass an installed probe (`scripts.check_dist`).
