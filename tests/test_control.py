@@ -4,6 +4,8 @@ import asyncio
 import struct
 import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from tests.frames import frame, identity_block, reply, u32
 from tests.machine import Machine, blocked_write, interaction, transmitted, until
@@ -16,6 +18,7 @@ from xbloom_studio import (
     Studio,
     UnsupportedStageError,
     UntestedOperationError,
+    control,
 )
 from xbloom_studio.control import STOP_CODES
 from xbloom_studio.machine_controls import EncodedTeaRecipe
@@ -2477,20 +2480,26 @@ class LifecycleRoundFiveTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_unfinished_frame_blocks_the_link(m, session, result)
 
     async def test_due_write_deadline_forbids_next_chunk_before_timer_callback(self):
-        class InlineSlowWrite(Machine):
+        bound = 5
+        skew = 0
+
+        class LateAfterFirstChunk(Machine):
             overlap = False
 
             async def write(self, data):
+                nonlocal skew
                 await super().write(data)
                 if data[:1] == b"\x58" and data[3:5] == (4506).to_bytes(2, "little"):
-                    # No yield between this write and the next chunk. The
-                    # timer is due, but its callback cannot run yet.
-                    time.sleep(0.06)
+                    # The write bound passes with no yield before the next
+                    # chunk, so its timer callback cannot run yet.
+                    skew = bound
 
-        m = InlineSlowWrite()
-        session, result = await self.interrupted_start(m, write_timeout=0.02)
-        self.assertIn("write_timeout", result["error"])
-        await self.assert_unfinished_frame_blocks_the_link(m, session, result)
+        clock = SimpleNamespace(monotonic=lambda: time.monotonic() + skew)
+        m = LateAfterFirstChunk()
+        with mock.patch.object(control, "time", clock):
+            session, result = await self.interrupted_start(m, write_timeout=bound)
+            self.assertIn("write_timeout", result["error"])
+            await self.assert_unfinished_frame_blocks_the_link(m, session, result)
 
     async def test_late_final_write_ack_after_swallowed_timeout_cannot_succeed(self):
         class LateAck(Stalling):
