@@ -283,6 +283,26 @@ class CoffeeRecipeTest(unittest.TestCase):
 
 
 class TeaRecipeTest(unittest.TestCase):
+    def test_tea_limit_boundaries(self):
+        # dose_g is a non-strict number rule, so fractions just outside count.
+        for dose, expected in [
+            (1, set()),
+            (5, set()),
+            (0.99, {"/tea/dose_g"}),
+            (5.01, {"/tea/dose_g"}),
+        ]:
+            with self.subTest(dose_g=dose):
+                self.assertEqual(paths(tea(dose_g=dose)), expected)
+        # Steep temperature is an integer, so 39 is the nearest lower value.
+        for temperature, expected in [
+            (40, set()),
+            (39, {"/tea/steeps/0/temperature"}),
+        ]:
+            document = tea()
+            document["tea"]["steeps"][0]["temperature"] = temperature
+            with self.subTest(temperature=temperature):
+                self.assertEqual(paths(document), expected)
+
     def test_tea_bounds_and_warnings(self):
         for key, value in [
             ("dose_g", 0),
