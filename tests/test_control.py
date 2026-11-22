@@ -27,8 +27,10 @@ class Hooks:
         self.session = session
         self.fail = set(fail)
         self.log = []
+        self.times = {}
 
     async def before_write(self, packet, frame_bytes):
+        self.times.setdefault(packet.command, time.monotonic())
         prepared = self.session._prepared if self.session else None
         self.log.append(("before", packet.command, prepared is not None))
         if packet.command in self.fail or "all" in self.fail:
@@ -1241,27 +1243,21 @@ class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         for delay, duration, completed in ((0.2, 0.3, True), (0.4, 0.1, False)):
             m = Machine()
-            times = {}
+            hooks = Hooks()
             handles = []
 
-            def start(packet, m=m, times=times, handles=handles, delay=delay):
-                times[3500] = time.monotonic()
+            def start(packet, m=m, handles=handles, delay=delay):
                 handles.append(
                     loop.call_later(delay, lambda: (m.emit(3500), m.state(0x22)))
                 )
                 return []
 
-            def stop(packet, m=m, times=times):
-                times[3505] = time.monotonic()
-                return m.studio(packet)
-
             m.overrides[3500] = start
-            m.overrides[3505] = stop
-            async with interaction(m, ack_timeout=1) as session:
+            async with interaction(m, ack_timeout=1, command_hooks=hooks) as session:
                 result = await (
                     await session.start_grinder(size=5, rpm=80, duration_s=duration)
                 ).wait()
-                elapsed = times[3505] - times[3500]
+                elapsed = hooks.times[3505] - hooks.times[3500]
                 self.assertGreaterEqual(elapsed, duration)
                 self.assertLess(elapsed, duration + 0.15)
                 self.assertEqual(m.codes().count(3500), 1)
