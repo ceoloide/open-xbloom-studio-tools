@@ -23,6 +23,7 @@ from xbloom_studio import (
 from xbloom_studio.control import STOP_CODES
 from xbloom_studio.machine_controls import EncodedTeaRecipe
 from xbloom_studio.protocol import decode
+from xbloom_studio.transport import GuardedFrameTransport, GuardedTransport
 
 
 class Hooks:
@@ -87,6 +88,36 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result["start_observed"])
             self.assertEqual(result["status"], "failed")
             self.assertTrue(result["stop_acknowledged"])
+
+    async def test_legacy_frame_transport_runs_without_guarded_methods(self):
+        fake = FrameFake()
+        self.assertNotIsInstance(fake, GuardedTransport)
+        self.assertNotIsInstance(fake, GuardedFrameTransport)
+        async with Interaction(
+            "frame-fake",
+            transport=fake,
+            allow_control=True,
+            settle=0,
+            subscription_settle=0,
+        ) as session:
+            self.assertFalse(session._withholds_final_chunk())
+            await session.back_home()
+        self.assertTrue(fake.frames)
+
+    async def test_failed_command_guard_leaves_subsequent_command_clean(self):
+        m = Machine()
+        async with interaction(m) as session:
+            with self.assertRaisesRegex(RuntimeError, "guard failed"):
+                await session._write(
+                    frame(8022),
+                    lambda: (_ for _ in ()).throw(RuntimeError("guard failed")),
+                    lambda: None,
+                    lambda final: None,
+                )
+            self.assertFalse(hasattr(session.transport, "command_guard"))
+            self.assertFalse(hasattr(session.transport, "on_transmit"))
+            self.assertFalse(hasattr(session.transport, "on_chunk"))
+            await session.back_home()
 
     async def test_water_activity_is_not_grinder_start_evidence(self):
         m = Machine()
@@ -2180,8 +2211,9 @@ class LifecycleRoundFourTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["status"], "failed")
                 self.assertIn("write_timeout", result["error"])
                 self.assertTrue(session.get_state()["recovery_required"])
-                self.assertIsNone(session.transport.on_transmit)
-                self.assertIsNone(session.transport.command_guard)
+                self.assertFalse(hasattr(session.transport, "on_transmit"))
+                self.assertFalse(hasattr(session.transport, "command_guard"))
+                self.assertFalse(hasattr(session.transport, "on_chunk"))
                 self.assertFalse(session._commands.locked())
 
 

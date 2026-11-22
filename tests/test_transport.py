@@ -18,6 +18,8 @@ from xbloom_studio.transport import (
     BleakConnector,
     BleakTransport,
     ControlTransport,
+    GuardedFrameTransport,
+    GuardedTransport,
     discover,
     validate_control_frame,
     validate_handshake,
@@ -355,10 +357,11 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         link = Recording(log)
         transport = ControlTransport(connector=link, hooks=Hooks(log))
         transport.event_sink = lambda kind, data: log.append((kind, data["hex"]))
-        transport.command_guard = lambda: log.append(("guard",))
         await transport.connect(lambda: None)
         await transport.subscribe(lambda data: None)
-        await transport._write_frame(frame(8022))
+        await transport._write_frame_guarded(
+            frame(8022), command_guard=lambda: log.append(("guard",))
+        )
         self.assertEqual(
             log,
             [
@@ -399,13 +402,13 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             transport = ControlTransport(connector=link)
             seen = []
             writes = link.writes
-            transport.command_guard = lambda s=seen, w=writes: s.append(
-                ("guard", len(w))
-            )
-            transport.on_transmit = lambda s=seen, w=writes: s.append(len(w))
             await transport.connect(lambda: None)
             await transport.subscribe(lambda data: None)
-            await transport._write_frame(frame(8004, payload))
+            await transport._write_frame_guarded(
+                frame(8004, payload),
+                command_guard=lambda s=seen, w=writes: s.append(("guard", len(w))),
+                on_transmit=lambda s=seen, w=writes: s.append(len(w)),
+            )
             self.assertEqual(seen, [("guard", 0), *expected])
 
     async def test_stop_journal_deadline_never_waits_for_resisting_hook(self):
@@ -482,10 +485,8 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         def guard():
             raise RuntimeError("context changed")
 
-        transport.command_guard = guard
         with self.assertRaises(RuntimeError):
-            await transport._write_frame(frame(8022))
-        transport.command_guard = None
+            await transport._write_frame_guarded(frame(8022), command_guard=guard)
         link.fail_commands[8022] = TimeoutError()
         with self.assertRaises(TimeoutError):
             await transport._write_frame(frame(8022))
@@ -604,10 +605,12 @@ class LifecycleRoundTwoTests(unittest.IsolatedAsyncioTestCase):
         link = Recording(log)
         transport = await self.connected(link)
         transport.event_sink = lambda kind, data: log.append((kind, data["hex"]))
-        transport.command_guard = lambda: log.append(("guard",))
-        transport.on_transmit = lambda: log.append(("arm",))
         raw = frame(8004, bytes(range(20)))
-        await transport._write_frame(raw)
+        await transport._write_frame_guarded(
+            raw,
+            command_guard=lambda: log.append(("guard",)),
+            on_transmit=lambda: log.append(("arm",)),
+        )
         first, last = raw[:20], raw[20:]
         self.assertEqual(
             log,
@@ -639,9 +642,8 @@ class LifecycleRoundTwoTests(unittest.IsolatedAsyncioTestCase):
             if changed:
                 raise RuntimeError("context changed")
 
-        transport.command_guard = guard
         with self.assertRaisesRegex(RuntimeError, "context changed"):
-            await transport._write_frame(frame(8022))
+            await transport._write_frame_guarded(frame(8022), command_guard=guard)
         self.assertEqual(link.writes, [])
         self.assertEqual(
             log[1:],
@@ -682,6 +684,72 @@ class LifecycleRoundTwoTests(unittest.IsolatedAsyncioTestCase):
             link.calls,
             ["connect", "start_notify", "stop_notify", "stop_notify", "start_notify"],
         )
+        self.assertEqual([p.command for p in link.sent], [8022])
+
+
+class GuardedTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_guarded_transport_protocols_distinguish_readonly_and_control(self):
+        readonly = BleakTransport(connector=ScriptedConnector("ro"))
+        control = ControlTransport(connector=ScriptedConnector("ctrl"))
+        self.assertIsInstance(readonly, GuardedTransport)
+        self.assertNotIsInstance(readonly, GuardedFrameTransport)
+        self.assertIsInstance(control, GuardedTransport)
+        self.assertIsInstance(control, GuardedFrameTransport)
+        for attr in (
+            "command_guard",
+            "on_transmit",
+            "on_chunk",
+            "command_guard_after_journal",
+            "transmit_hook_before_final_chunk",
+        ):
+            self.assertFalse(hasattr(readonly, attr), attr)
+            self.assertFalse(hasattr(control, attr), attr)
+
+    async def test_open_session_guarded_runs_on_transmit_before_final_chunk(self):
+        link = ScriptedConnector(responder=lambda packet: [], write_size=8)
+        transport = BleakTransport(connector=link)
+        await transport.connect(lambda: None)
+        await transport.subscribe(lambda data: None)
+        seen: list[int] = []
+        await transport.open_session_guarded(
+            on_transmit=lambda w=link.writes, s=seen: s.append(len(w))
+        )
+        self.assertEqual(seen, [2])
+        self.assertEqual(b"".join(link.writes), HANDSHAKE)
+
+    async def test_failed_or_cancelled_guarded_write_does_not_leak_hooks(self):
+        link = ScriptedConnector(responder=lambda packet: [])
+        transport = ControlTransport(connector=link)
+        await transport.connect(lambda: None)
+        await transport.subscribe(lambda data: None)
+        calls: list[str] = []
+
+        def fail_guard() -> None:
+            calls.append("fail_guard")
+            raise RuntimeError("boom")
+
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            await transport._write_frame_guarded(
+                frame(8022),
+                command_guard=fail_guard,
+                on_transmit=lambda: calls.append("fail_transmit"),
+                on_chunk=lambda final: calls.append(f"fail_chunk:{final}"),
+            )
+
+        def cancel_guard() -> None:
+            calls.append("cancel_guard")
+            raise asyncio.CancelledError
+
+        with self.assertRaises(asyncio.CancelledError):
+            await transport._write_frame_guarded(
+                frame(8022),
+                command_guard=cancel_guard,
+                on_transmit=lambda: calls.append("cancel_transmit"),
+                on_chunk=lambda final: calls.append(f"cancel_chunk:{final}"),
+            )
+
+        await transport._write_frame(frame(8022))
+        self.assertEqual(calls, ["fail_guard", "cancel_guard"])
         self.assertEqual([p.command for p in link.sent], [8022])
 
 

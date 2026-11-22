@@ -20,6 +20,7 @@ from .transport import (
     BleakTransport,
     CommandHooks,
     EventSink,
+    GuardedTransport,
     Transport,
 )
 
@@ -426,16 +427,11 @@ class ReadOnlyClient:
             self._handshake_armed = True
 
         transport = self.transport
-        if not getattr(transport, "transmit_hook_before_final_chunk", False):
-            arm()
-            await transport.open_session()
+        if isinstance(transport, GuardedTransport):
+            await transport.open_session_guarded(on_transmit=arm)
             return
-        previous = getattr(transport, "on_transmit", None)
-        setattr(transport, "on_transmit", arm)  # noqa: B010
-        try:
-            await transport.open_session()
-        finally:
-            setattr(transport, "on_transmit", previous)  # noqa: B010
+        arm()
+        await transport.open_session()
 
     async def read_information(self, name: str) -> str | None:
         async with self._lock:
