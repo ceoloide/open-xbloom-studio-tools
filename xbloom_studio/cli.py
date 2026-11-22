@@ -116,16 +116,12 @@ _ARGPARSE_MUTEX = re.compile(
 
 
 class _CliParseError(ValueError):
-    """Structured CLI argument parse failure intercepted by :func:`main`."""
-
     def __init__(self, message: str, *, prog: str) -> None:
         super().__init__(message)
         self.prog = prog
 
 
 class _DiagnosticArgumentParser(argparse.ArgumentParser):
-    """ArgumentParser variant that hands parse errors to canonical diagnostics."""
-
     def error(self, message: str) -> NoReturn:
         raise _CliParseError(message, prog=self.prog)
 
@@ -401,8 +397,6 @@ def control_flags(p: argparse.ArgumentParser) -> None:
 
 
 class _SourceTracker:
-    """Local CLI invocation context; never serialized across RPC or SSH."""
-
     def __init__(self) -> None:
         self.method: str | None = None
         self.params: Mapping[str, Any] | None = None
@@ -448,7 +442,6 @@ def _subcommand_tree(p: argparse.ArgumentParser) -> dict[str, set[str]]:
 
 
 def _match_global_option(name: str) -> str | None:
-    """Resolve exact global option or unique argparse long-option prefix."""
     if not name.startswith("--") or len(name) < 3:
         return None
     if name in _GLOBAL_OPTIONS:
@@ -460,7 +453,6 @@ def _match_global_option(name: str) -> str | None:
 def _scan_cli_args(
     args: Sequence[str], p: argparse.ArgumentParser
 ) -> tuple[str, str | None, bool]:
-    """Extract global --error-format, known subcommand, and trailing global flag."""
     tree = _subcommand_tree(p)
     error_format = "auto"
     index = 0
@@ -539,7 +531,6 @@ def _target_parsers(
 def _parser_choices(
     p: argparse.ArgumentParser | None, known_cmd: str | None, arg_name: str | None
 ) -> tuple[str, ...] | None:
-    """Derive permitted option or subcommand choices directly from ``p``."""
     for candidate in _target_parsers(p, known_cmd):
         for action in candidate._actions:
             if isinstance(action, argparse._SubParsersAction):
@@ -562,7 +553,6 @@ def _is_parser_mutex_conflict(
     first: str,
     second: str,
 ) -> bool:
-    """Return whether ``first`` and ``second`` belong to one parser mutex group."""
     if first == second:
         return False
     for candidate in _target_parsers(p, known_cmd):
@@ -584,7 +574,6 @@ def _sanitize_argparse_message(
     p: argparse.ArgumentParser | None = None,
     known_cmd: str | None = None,
 ) -> str:
-    """Remove raw CLI argument values from argparse error messages."""
     text = message.strip()
     if _ARGPARSE_REQUIRED.fullmatch(text):
         return text

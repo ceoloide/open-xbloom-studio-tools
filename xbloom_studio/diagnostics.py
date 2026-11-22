@@ -14,7 +14,7 @@ import re
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from .provider_exports import credential_key
 
@@ -234,7 +234,6 @@ class DiagnosticContext:
 
 
 def _normalize_preset(value: Any) -> tuple[str, str, int] | None:
-    """Return canonical ``(slot, payload_hex_lower, flags)`` or None."""
     if not isinstance(value, Mapping):
         return None
     slot = _single_slot(value.get("slot"))
@@ -773,7 +772,6 @@ FALLBACK_BY_ERROR_CODE: dict[str, str] = {
 
 
 def _is_decoded_basic_credential(token: str) -> bool:
-    """Return whether a bounded Basic token decodes to printable ``user:pass``."""
     n = len(token)
     if n < 4 or n > _MAX_BASIC_DECODE_LEN:
         return False
@@ -797,7 +795,6 @@ def _is_decoded_basic_credential(token: str) -> bool:
 
 
 def _is_opaque_basic_secret(token: str) -> bool:
-    """Return whether a standard Base64 token looks like an opaque Basic secret."""
     n = len(token)
     if n < 4 or "-" in token or "_" in token:
         return False
@@ -825,7 +822,6 @@ def _is_opaque_basic_secret(token: str) -> bool:
 
 
 def _has_basic_token_continuation(text: str, end: int) -> bool:
-    """Return whether a ``Basic`` candidate is only a prefix of a larger token."""
     length = len(text)
     if end >= length:
         return False
@@ -836,7 +832,6 @@ def _has_basic_token_continuation(text: str, end: int) -> bool:
 
 
 def _is_basic_secret_match(text: str, token: str, end: int) -> bool:
-    """Return whether a ``Basic`` regex match is a real credential span."""
     length = len(text)
     if end < length and text[end] in _BASIC_HARD_CONT_CHAR_SET:
         return False
@@ -856,7 +851,6 @@ def _is_basic_secret_match(text: str, token: str, end: int) -> bool:
 
 
 def _redact_pem(text: str) -> str:
-    """Redact complete or truncated/unclosed PEM private-key blocks in O(n)."""
     if "-----" not in text:
         return text
     out: list[str] = []
@@ -877,7 +871,6 @@ def _redact_pem(text: str) -> str:
 
 
 def _iter_non_jwt_sensitive_spans(text: str) -> Iterator[tuple[int, int]]:
-    """Yield non-JWT secret spans in ``text`` without consuming adjacent labels."""
     pos = 0
     length = len(text)
     while pos < length:
@@ -895,7 +888,6 @@ def _iter_non_jwt_sensitive_spans(text: str) -> Iterator[tuple[int, int]]:
 
 
 def _iter_jwt_spans(text: str) -> Iterator[tuple[int, int]]:
-    """Yield JWT spans in ``text`` in O(n) time, including after ``-``."""
     if "." not in text:
         return
     pos = 0
@@ -998,7 +990,6 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _truncate_line(text: str, limit: int) -> str:
-    """Sanitize a source excerpt line while preserving leading indentation."""
     stripped = text.rstrip("\r\n")
     cleaned = "".join(
         "  " if ch == "\t" else " " if _is_unsafe_char(ch) else ch for ch in stripped
@@ -1009,7 +1000,6 @@ def _truncate_line(text: str, limit: int) -> str:
 
 
 def _split_lf_lines(text: str) -> list[tuple[int, int, str]]:
-    """Split ``text`` strictly on LF to match JSON parser and pointer spans."""
     lines: list[tuple[int, int, str]] = []
     start = 0
     length = len(text)
@@ -1065,7 +1055,6 @@ def _parse_json_structure(
     *,
     target_segments: list[str] | None = None,
 ) -> tuple[int | None, list[tuple[int, int]], set[int]] | None:
-    """Validate JSON token structure, locate an optional pointer, and mark secrets."""
     index = 0
     sensitive_spans: list[tuple[int, int]] = []
     key_indices: set[int] = set()
@@ -1180,12 +1169,6 @@ def _proven_malformed_key_indices(
     tokens: Sequence[tuple[str, str, int, int]],
     decoded_strings: Mapping[int, str],
 ) -> set[int]:
-    """Return string token indices grammatically proven to be object keys.
-
-    Tracks container state from token 0 up to the first JSON grammar error so
-    strings in array positions (such as ``["first", "Secret": 1]``) or after a
-    syntax break are never mistaken for object keys.
-    """
     proven: set[int] = set()
     stack: list[str] = ["val"]
 
@@ -1347,7 +1330,6 @@ def extract_json_excerpt(
     if column is None and len(target_raw) > 200:
         return None
 
-    # Fail closed if the source cannot be cleanly tokenized as JSON tokens.
     tokens = _tokenize_json(text)
     if tokens is None:
         return None
@@ -1356,8 +1338,6 @@ def extract_json_excerpt(
     if parsed is not None:
         _, sensitive_spans, keep_string_indices = parsed
     else:
-        # Malformed JSON: decode every string token and omit the excerpt
-        # completely if any sensitive key or secret-shaped token exists anywhere.
         decoded_strings: dict[int, str] = {}
         for idx, (kind, raw, _, _) in enumerate(tokens):
             if kind != "string":
@@ -1384,7 +1364,6 @@ def extract_json_excerpt(
         for idx, (kind, raw, t_start, t_end) in enumerate(tokens):
             if t_end <= l_start or t_start >= l_end:
                 continue
-            # Fail closed if any token crosses an excerpt line boundary.
             if t_start < l_start or t_end > l_end:
                 return None
             l_tokens.append((idx, kind, raw, t_start, t_end))
@@ -1730,7 +1709,6 @@ def sanitize_diagnostic(
     if enclosing_error_code is not None and spec.error_code != enclosing_error_code:
         return None
     cause = raw.get("cause")
-    # Derive fix, docs_url, and repair_guide strictly from the local catalog.
     if spec.code == "XB_INTERNAL_ERROR":
         return attach_local_context(
             build_diagnostic("XB_INTERNAL_ERROR", cause=spec.default_cause),
@@ -1846,12 +1824,6 @@ def _single_slot(value: Any) -> str | None:
 def _inspect_slots(
     mappings: Sequence[Mapping[str, Any]],
 ) -> tuple[bool, str | None, str | None]:
-    """Return ``(consistent, single_slot, display_slot)`` across all layers.
-
-    ``consistent`` is False when any layer carries a malformed/empty slot
-    declaration or any two slot declarations disagree. ``single_slot`` is the
-    unique slot ("A"/"B"/"C") only when consistent and single-slot everywhere.
-    """
     seen_display: set[str] = set()
     single_ok = True
     for mapping in mappings:
@@ -1906,10 +1878,28 @@ _PRESET_RECORD_FIELDS = (
 )
 
 
+_PresetWriteState = Literal[
+    "superseded",
+    "saved",
+    "not_sent",
+    "cancelled",
+    "in_progress",
+    "exhausted",
+    "retryable",
+]
+_PRESET_WRITE_STATES: dict[str, _PresetWriteState] = {
+    "superseded": "superseded",
+    "saved": "saved",
+    "not_sent": "not_sent",
+    "cancelled": "cancelled",
+    "in_progress": "in_progress",
+    "exhausted": "exhausted",
+    "retryable": "retryable",
+}
+
+
 @dataclass(frozen=True)
 class _PresetWritePolicy:
-    """Single validated policy outcome for a preset write reply or error."""
-
     valid: bool
     next_step: str
     retry_allowed: bool
@@ -1919,7 +1909,7 @@ class _PresetWritePolicy:
     saved_cleanup_failed: bool
     conflict: bool = False
     write_id: str | None = None
-    state: str | None = None
+    state: _PresetWriteState | None = None
     outcome: str | None = None
     attempts_used: int | None = None
     max_attempts: int | None = None
@@ -1940,7 +1930,6 @@ def _refusal_next_step(
     different_contents: bool = False,
     batch_refused: bool = False,
 ) -> str:
-    """Return safe, non-resending inspection/ask-user advice for a refused write."""
     if saved_cleanup_failed:
         return _SAVED_CLEANUP_FAILED_FIX
     if recovery_required:
@@ -2028,7 +2017,6 @@ def _validate_preset_guidance_types(container: Mapping[str, Any]) -> None:
 def _apply_preset_write_policy(
     target: dict[str, Any], policy: _PresetWritePolicy
 ) -> bool:
-    """Apply validated policy consistently to guidance and retry flags."""
     changed = False
     if "next_step" in target:
         target["next_step"] = policy.next_step
@@ -2047,7 +2035,6 @@ def _extract_preset_write_layers(
     *,
     prefer_top_attempt: bool = False,
 ) -> tuple[Mapping[str, Any] | None, tuple[Mapping[str, Any], ...]]:
-    """Collect all recognized preset-write/attempt layers in priority order."""
     raw_details = root.get("details")
     details = (
         raw_details if prefer_top_attempt and isinstance(raw_details, Mapping) else None
@@ -2120,7 +2107,6 @@ def _sanitize_preset_write_mapping(
     strict: bool = False,
     include_details: bool = False,
 ) -> tuple[dict[str, Any], bool]:
-    """Sanitize guidance and retry flags across all recognized nested containers."""
     if strict:
         _validate_preset_guidance_types(mapping)
     copy = dict(mapping)
@@ -2158,7 +2144,6 @@ def _sanitize_preset_write_mapping(
 
 
 def _untrusted_preset_write_cause(policy: _PresetWritePolicy, *, refused: bool) -> str:
-    """Return a locally generated descriptive cause for untrusted preset writes."""
     if policy.saved_cleanup_failed:
         return (
             "Preset write observed a save event, but post-save cleanup failed; "
@@ -2266,7 +2251,6 @@ def _evaluate_preset_write(
     require_request_match: bool = False,
     context: DiagnosticContext | None = None,
 ) -> _PresetWritePolicy:
-    """Validate preset-write evidence once across ``record`` and enclosing layers."""
     from .preset_writes import (
         MAX_ATTEMPTS,
         NEXT_STEPS,
@@ -2513,9 +2497,12 @@ def _evaluate_preset_write(
         safe_identifier(record.get("write_id")) if isinstance(record, Mapping) else None
     )
     raw_state = record.get("state") if isinstance(record, Mapping) else None
-    state = raw_state if type(raw_state) is str and raw_state in NEXT_STEPS else None
+    state: _PresetWriteState | None = (
+        _PRESET_WRITE_STATES.get(raw_state)
+        if type(raw_state) is str and raw_state in NEXT_STEPS
+        else None
+    )
     any_attempt_saved = any(bool(SAVED & set(items)) for items in all_attempt_lists)
-    # Historical saved attempts inside a batch-superseded write are not a new live save.
     live_attempt_saved = any_attempt_saved and state != "superseded"
     any_saved = (
         rec_outcome in SAVED
@@ -2783,21 +2770,23 @@ def _evaluate_preset_write(
             step += NO_PRESET_FRAME
         return make_valid(step, True)
 
-    # state == "not_sent"
-    if (
-        (not refused and (not request_allows_resend or retry_allowed is not True))
-        or eff_recovery
-        or attempts_used != 0
-        or remaining != max_attempts
-        or (rec_outcome is not None and rec_outcome != "refused")
-        or bool(enclosing_outcomes)
-        or non_failed_status
-        or missing_required_failed
-    ):
-        return make_fallback()
-    if refused:
-        return make_valid_refusal()
-    return make_valid(NEXT_STEPS["not_sent"], True)
+    if state == "not_sent":
+        if (
+            (not refused and (not request_allows_resend or retry_allowed is not True))
+            or eff_recovery
+            or attempts_used != 0
+            or remaining != max_attempts
+            or (rec_outcome is not None and rec_outcome != "refused")
+            or bool(enclosing_outcomes)
+            or non_failed_status
+            or missing_required_failed
+        ):
+            return make_fallback()
+        if refused:
+            return make_valid_refusal()
+        return make_valid(NEXT_STEPS["not_sent"], True)
+
+    return make_fallback()
 
 
 def render_preset_write_next_step(
@@ -3086,7 +3075,6 @@ def preset_write_diagnostic(
 def _map_pointer_to_source(
     diag_code: str, pointer: str, context: DiagnosticContext
 ) -> str | None:
-    """Map a validation pointer to an exact pointer inside a local CLI JSON file."""
     if not context.allow_excerpt or not context.source_path or not context.source_text:
         return None
     if context.source_kind == "recipe_document":
@@ -3225,7 +3213,6 @@ def _preset_write_error_policy(
     refused: bool,
     context: DiagnosticContext | None = None,
 ) -> _PresetWritePolicy:
-    """Evaluate a remote error's preset-write details once across all layers."""
     if not isinstance(details, Mapping):
         return _evaluate_preset_write(
             None, refused=refused, require_request_match=True, context=context
@@ -3245,7 +3232,6 @@ def _rebuild_remote_diagnostic(
     *,
     context: DiagnosticContext | None = None,
 ) -> tuple[dict[str, Any], _PresetWritePolicy | None]:
-    """Rebuild diagnostic and any preset-write policy from a remote envelope."""
     raw_code = detail.get("code")
     error_code = raw_code if type(raw_code) is str else "internal_error"
     raw_type = detail.get("type")
@@ -3271,7 +3257,6 @@ def _rebuild_remote_diagnostic(
             and candidate not in _LOCAL_ONLY_DIAGNOSTIC_CODES
             and CATALOG[candidate].error_code == error_code
         ):
-            # Keep route-consistent sub-classification only.
             if error_code == "validation_error":
                 if context is not None and context.method == "machine_command":
                     diag_code = "XB_COMMAND_VALIDATION"
