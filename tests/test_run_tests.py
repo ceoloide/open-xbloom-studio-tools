@@ -256,7 +256,7 @@ class RunTests(RepoCase):
                     raise run_tests.queue.Empty
                 return "item"
 
-        self.assertEqual(run_tests.take(Slow()), "item")
+        self.assertEqual(run_tests.take(Slow(), lambda: None), "item")
         self.assertEqual(Slow.calls, [run_tests.POLL] * 3)
 
     def test_signals_to_a_finished_process_are_ignored(self):
@@ -1203,6 +1203,49 @@ class RealWorkerTests(NestedRootCase):
             spawn=Fake().spawn,
         )
         self.assertIsNone(child.poll())
+
+    def test_a_child_that_exited_before_the_run_keeps_its_exit_code(self):
+        child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+        self.addCleanup(child.wait)
+        while not gone(child.pid):
+            time.sleep(0.01)
+        run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=Fake().spawn,
+        )
+        self.assertEqual(child.wait(), 3)
+
+    @unittest.skipUnless(LINUX, "uses /proc")
+    def test_a_worker_that_exits_before_its_wait_keeps_its_exit_code(self):
+        class Late:
+            """A worker waited for only after a few polls."""
+
+            def __init__(self, process):
+                self.process = process
+                self.pid = process.pid
+
+            def wait(self, timeout=None):
+                time.sleep(5 * run_tests.POLL)
+                return self.process.wait(timeout)
+
+        def spawn(argv, env, output):
+            """A worker that has exited a few polls before its spawn returns."""
+            process = run_tests.spawn(argv, env, output)
+            while not gone(process.pid):
+                time.sleep(0.01)
+            time.sleep(5 * run_tests.POLL)
+            return Late(process)
+
+        [outcome] = run_tests.execute(
+            {"tests.test_a": ["tests.test_a"]},
+            jobs=1,
+            out=io.StringIO(),
+            spawn=spawn,
+            build=lambda targets, data: [sys.executable, "-c", "raise SystemExit(3)"],
+        )
+        self.assertEqual(outcome.status, "FAIL")
 
     def test_a_run_restores_the_subreaper_setting(self):
         run_tests.execute(

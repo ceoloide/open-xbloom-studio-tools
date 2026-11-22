@@ -258,15 +258,17 @@ def subreaper(flag: int) -> int:
     return previous.value
 
 
-def children() -> set[int]:
-    """This process's children, as /proc lists them; none without /proc."""
-    found: set[int] = set()
+def children() -> dict[int, bytes]:
+    """This process's children and their states (``b"Z"``: exited, not yet
+    reaped), as /proc lists them; none without /proc."""
+    found: dict[int, bytes] = {}
     with contextlib.suppress(FileNotFoundError), os.scandir("/proc") as entries:
         for entry in entries:
             with contextlib.suppress(OSError):  # not a process, or one that ended
                 text = Path(entry.path, "stat").read_bytes()
-                if int(text.rsplit(b")", 1)[1].split()[1]) == os.getpid():
-                    found.add(int(entry.name))
+                state, parent = text.rsplit(b")", 1)[1].split()[:2]
+                if int(parent) == os.getpid():
+                    found[int(entry.name)] = state
     return found
 
 
@@ -277,7 +279,7 @@ def sweep(keep: set[int]) -> None:
     round. A child's pid stays its own until it is reaped, so the kill never
     reaches an unrelated process.
     """
-    while found := children() - keep:
+    while found := children().keys() - keep:
         for pid in found:
             quietly(os.kill, pid, signal.SIGKILL)
         for pid in found:
@@ -357,6 +359,19 @@ class Pool:
         classify(outcome, code)
         return outcome
 
+    def reap(self, keep: set[int]) -> None:
+        """Reap this process's exited children but ``keep`` and the workers,
+        which their own wait reaps.
+
+        Under the lock no worker starts or is forgotten. A zombie keeps its
+        pid until it is reaped, so the wait never reaches an unrelated process.
+        """
+        with self.lock:
+            exited = {pid for pid, state in children().items() if state == b"Z"}
+            for pid in exited - keep - self.live:
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(pid, os.WNOHANG)
+
     def stop(self) -> None:
         with self.lock:
             self.stopping.set()
@@ -385,8 +400,17 @@ def execute(
 
     Each of ``signals`` stops the run with ``Interrupted``, after the
     workers are killed and the run root is removed. A root that cannot be
-    removed is added to ``problems``. Before the removal, on Linux, every
-    descendant left is killed: this process adopts its orphans for the run.
+    removed is added to ``problems``.
+
+    On Linux this process adopts its orphaned descendants for the run. It
+    spares the children it had when the run started. Any other child that
+    exits during the run it reaps, unless it is a worker, which its own wait
+    reaps; any left before the removal it kills and reaps. The kernel does
+    not say where an adopted orphan came from, so a caller that runs this in
+    its own process loses to the run every child it gains meanwhile, such as
+    an orphan of a child it already had or a child another thread starts: a
+    ``Popen`` waiting for one may report exit code 0, and one still running
+    at the end is killed.
     """
     done: queue.SimpleQueue[Outcome | BaseException | None] = queue.SimpleQueue()
     received: list[int] = []
@@ -399,7 +423,7 @@ def execute(
 
     previous = {signum: signal.signal(signum, interrupt) for signum in signals}
     was_subreaper = subreaper(1)
-    keep = children()
+    keep = set(children())
     run_root: Path | None = None
     pool: Pool | None = None
     threads: list[threading.Thread] = []
@@ -443,7 +467,7 @@ def execute(
             threads.append(thread)
         finished = 0
         while finished < workers:
-            item = take(done)
+            item = take(done, lambda: pool.reap(keep))
             if item is None:
                 finished += 1
             elif isinstance(item, BaseException):
@@ -470,14 +494,15 @@ def execute(
     return sorted(outcomes, key=lambda outcome: outcome.index)
 
 
-def take(done: queue.SimpleQueue[T]) -> T:
-    """The next item of ``done``.
+def take(done: queue.SimpleQueue[T], idle: Callable[[], None]) -> T:
+    """The next item of ``done``; call ``idle`` before each wait for it.
 
     The kernel may hand a process-directed signal to a worker thread, and
     Python runs the handler only once the main thread wakes up, so wake up
     every ``POLL`` seconds.
     """
     while True:
+        idle()
         try:
             return done.get(timeout=POLL)
         except queue.Empty:
