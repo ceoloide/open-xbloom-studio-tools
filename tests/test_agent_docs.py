@@ -34,7 +34,7 @@ LINE_NUMBER = re.compile(r":\d+(?:-\d+)?$")
 ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)")
 VARIABLES = {"UV_PROJECT_ENVIRONMENT", testroot.TMPBASE}
 TMPBASE_BYTES = 41
-PYTHONS = {"3.10", "3.11", "3.12", "3.13", "3.14"}
+PYTHONS = {"3.14", "3.15"}
 UNKNOWN = "not a known command"
 # Commands the plan requires the real file to document.
 REQUIRED_COMMANDS = {
@@ -43,7 +43,7 @@ REQUIRED_COMMANDS = {
     "uv run --locked python -m scripts.run_tests tests.test_cli",
     "uv run --locked python -m scripts.run_tests"
     " tests.test_cli.PureCommandTests.test_interrupt_exits_130",
-    "UV_PROJECT_ENVIRONMENT=.venv-310 uv run --locked --python 3.10"
+    "UV_PROJECT_ENVIRONMENT=.venv-314 uv run --locked --python 3.14"
     " python -m scripts.presubmit --fast",
     "uv run --locked python -m tests.child xbloom_studio"
     " --connector simulator --direct machine state",
@@ -389,7 +389,7 @@ class CheckerTests(unittest.TestCase):
             "python -m tests.chld xbloom_studio machine state": UNKNOWN,
             "python -m tests.child xbloom_studi machine state": UNKNOWN,
             "uv run --frozen python -m scripts.presubmit --only lockfile": UNKNOWN,
-            "uv run --locked --python 3.9 python -m scripts.presubmit": "--python",
+            "uv run --locked --python 3.13 python -m scripts.presubmit": "--python",
             "uv run --locked --python": "--python",
             "FOO=1 python -m scripts.presubmit": "unexpected variable FOO",
             "UPDATE_CONTRACTS=1 uv run --locked python -m scripts.presubmit": (
@@ -407,7 +407,7 @@ class CheckerTests(unittest.TestCase):
             # Within the limit in characters, over it in bytes.
             f"{testroot.TMPBASE}=/tmp/{'é' * ((TMPBASE_BYTES - 3) // 2)}"
             " python -m scripts.presubmit": f"longer than {TMPBASE_BYTES} bytes",
-            "UV_PROJECT_ENVIRONMENT=.venv-310": UNKNOWN,
+            "UV_PROJECT_ENVIRONMENT=.venv-314": UNKNOWN,
             "ruff format .": UNKNOWN,
             "echo 'unclosed": "No closing quotation",
         }
@@ -432,7 +432,7 @@ class CheckerTests(unittest.TestCase):
         lines = (
             f"{testroot.TMPBASE}=/tmp/{'x' * (TMPBASE_BYTES - 5)}"
             " python -m scripts.presubmit",
-            "UV_PROJECT_ENVIRONMENT=.venv-314 uv run --locked --python 3.14"
+            "UV_PROJECT_ENVIRONMENT=.venv-315 uv run --locked --python 3.15"
             " python -m scripts.presubmit",
         )
         self.assertEqual(problems_with(FIXTURE + fence(*lines)), [])

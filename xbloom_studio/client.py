@@ -8,7 +8,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from types import TracebackType
-from typing import Any, TypeVar
+from typing import Any, Self
 
 from .connector import Connector, normalize_identity
 from .events import protocol_error
@@ -23,9 +23,6 @@ from .transport import (
     Transport,
 )
 
-T = TypeVar("T")
-C = TypeVar("C", bound="ReadOnlyClient")
-
 # One owner per machine identity in this process; other processes use leases.
 _owners: dict[str, ReadOnlyClient] = {}
 DECODER_VERSION = "0.0.1"
@@ -34,8 +31,8 @@ DECODER_VERSION = "0.0.1"
 async def wait_set(event: asyncio.Event, timeout: float) -> bool:
     """Wait for an event; unlike wait_for, never swallow a racing cancellation.
 
-    On Python 3.10 and 3.11 ``asyncio.wait_for`` can return normally when a
-    cancellation arrives as the inner wait completes.
+    When ``event`` is already set, ``asyncio.wait_for`` completes synchronously
+    before a pending cancellation arrives; ``asyncio.wait`` always yields once.
     """
     waiter = asyncio.ensure_future(event.wait())
     try:
@@ -45,14 +42,14 @@ async def wait_set(event: asyncio.Event, timeout: float) -> bool:
     return bool(done)
 
 
-async def _settle(task: asyncio.Future[T]) -> None:
+async def _settle[T](task: asyncio.Future[T]) -> None:
     task.cancel()
     await asyncio.wait({task})
     if not task.cancelled():
         task.exception()  # retrieved; the caller reports its own outcome
 
 
-async def bounded(awaitable: Awaitable[T], timeout: float) -> T:
+async def bounded[T](awaitable: Awaitable[T], timeout: float) -> T:
     """Like ``wait_for``, but a cancellation always propagates.
 
     The inner operation is cancelled and finished before the caller's
@@ -66,7 +63,7 @@ async def bounded(awaitable: Awaitable[T], timeout: float) -> T:
         raise
     if not done:
         await _settle(task)
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
     return task.result()
 
 
@@ -192,7 +189,7 @@ class ReadOnlyClient:
     ) -> Transport:
         return BleakTransport(device, connector=connector, hooks=hooks)
 
-    async def _call(self, awaitable: Awaitable[T]) -> T:
+    async def _call[T](self, awaitable: Awaitable[T]) -> T:
         try:
             return await bounded(awaitable, self.operation_timeout)
         except Exception as exc:
@@ -499,7 +496,7 @@ class ReadOnlyClient:
         async with self._lock:
             await self._cleanup()
 
-    async def __aenter__(self: C) -> C:
+    async def __aenter__(self) -> Self:
         try:
             await self.connect()
             await self.subscribe()

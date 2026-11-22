@@ -274,7 +274,7 @@ def recipe_constraints() -> dict[str, Any]:
 def _pointer(path: str, key: object) -> str:
     try:
         text = str(key)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         text = f"<invalid {type(key).__name__} key>"
     return path + "/" + text.replace("~", "~0").replace("/", "~1")
 

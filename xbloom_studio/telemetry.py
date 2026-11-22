@@ -9,7 +9,7 @@ import time
 from collections import deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .events import DECODED, decode_event, protocol_error
@@ -102,7 +102,7 @@ class DeviceState:
         self.revision += 1
         values = decode_values(packet)
         event = decode_event(packet)
-        wall = datetime.now(timezone.utc).isoformat()
+        wall = datetime.now(UTC).isoformat()
         mono = time.monotonic()
         if event is not None:
             self.events.append(

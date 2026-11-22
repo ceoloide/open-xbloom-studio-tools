@@ -332,20 +332,14 @@ class MigrationTest(unittest.TestCase):
                     attempts.append(1)
                     if busy_forever or len(attempts) == 1:
                         error = sqlite3.OperationalError("database is locked")
-                        if len(attempts) > 1:
-                            error.sqlite_errorcode = 5
+                        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
                         raise error
                 return super().execute(sql, *args)
 
         def connect(path, *args, **kwargs):
             return original(path, *args, factory=BusyWAL, **kwargs)
 
-        with (
-            mock.patch.dict(sqlite3.__dict__),
-            mock.patch("xbloom_studio.storage.sqlite3.connect", side_effect=connect),
-        ):
-            # Python 3.10 has no SQLITE_BUSY; emulate it on every version.
-            sqlite3.__dict__.pop("SQLITE_BUSY", None)
+        with mock.patch("xbloom_studio.storage.sqlite3.connect", side_effect=connect):
             store = Store(self.path)
             self.assertEqual(
                 store.db.execute("PRAGMA journal_mode").fetchone()[0], "wal"

@@ -319,7 +319,7 @@ class FailureTest(JournalTestCase):
                 self.recorder.emit("first", {})
                 await asyncio.to_thread(started.wait, 1)
                 self.recorder.emit("second", {})
-                with self.assertRaises(asyncio.TimeoutError):
+                with self.assertRaises(TimeoutError):
                     await asyncio.wait_for(self.recorder.flush(), 0.01)
                 self.recorder.emit("overflow", {})
                 self.assertEqual(self.recorder.lost, 1)

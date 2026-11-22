@@ -23,8 +23,6 @@ TOP_LEVEL = {"type", "title", "properties", "required", "$defs", "additionalProp
 DATA = {"const", "default", "enum", "examples", "discriminator"}
 # Maps from a name to a schema: every name is kept, every value is a schema.
 NAMED = {"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"}
-# Python 3.10 turns ``x: Any = None`` into ``Optional[Any]``; 3.11+ give ``{}``.
-OPTIONAL_ANY = ([{}, {"type": "null"}], [{"type": "null"}, {}])
 
 
 async def _noop(method: str, params: dict[str, Any]) -> Any:
@@ -32,11 +30,7 @@ async def _noop(method: str, params: dict[str, Any]) -> Any:
 
 
 def strip(schema: Any) -> Any:
-    """``schema`` without any string-valued ``title`` or ``description`` key.
-
-    ``anyOf: [{}, {"type": "null"}]`` accepts anything, as ``{}`` does, so it
-    is dropped; every other union is kept.
-    """
+    """``schema`` without any string-valued ``title`` or ``description`` key."""
     if isinstance(schema, list):
         return [strip(item) for item in schema]
     if not isinstance(schema, dict):
@@ -50,8 +44,6 @@ def strip(schema: Any) -> Any:
         elif key not in DATA:
             value = strip(value)
         stripped[key] = value
-    if stripped.get("anyOf") in OPTIONAL_ANY:
-        del stripped["anyOf"]
     return stripped
 
 
@@ -245,16 +237,6 @@ class ProjectionTests(unittest.TestCase):
                 "discriminator": {"mapping": {"title": "#/$defs/A"}},
             },
         )
-
-    def test_strip_drops_only_an_optional_any(self):
-        for branches in ([{}, {"type": "null"}], [{"type": "null"}, {}]):
-            optional_any = {"anyOf": branches, "default": None}
-            self.assertEqual(strip(optional_any), {"default": None})
-        for kept in (
-            [{}, {"type": "integer"}],
-            [{"type": "integer"}, {"type": "null"}],
-        ):
-            self.assertEqual(strip({"anyOf": kept}), {"anyOf": kept})
 
     def test_first_difference_is_a_json_pointer(self):
         self.assertEqual(first_difference({"a": [1, 2]}, {"a": [1, 3]}), "/a/1")

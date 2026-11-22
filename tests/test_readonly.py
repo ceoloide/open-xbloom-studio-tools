@@ -881,7 +881,7 @@ class BoundedWaitTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 finished.append(True)
 
-        with self.assertRaises(asyncio.TimeoutError):
+        with self.assertRaises(TimeoutError):
             await bounded(slow(), 0.01)
         self.assertEqual(finished, [True])
         task = asyncio.create_task(bounded(slow(), 5))
@@ -895,7 +895,7 @@ class BoundedWaitTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(5)
 
         self.assertEqual(await bounded(asyncio.sleep(0, "value"), 1), "value")
-        with self.assertRaises(asyncio.TimeoutError):
+        with self.assertRaises(TimeoutError):
             await bounded(failing(), 0)
         self.assertFalse(await wait_set(asyncio.Event(), 0.001))
 

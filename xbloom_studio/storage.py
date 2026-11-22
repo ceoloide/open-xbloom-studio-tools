@@ -41,14 +41,7 @@ def _loads(value: str | None) -> Any:
 
 
 def _busy(error: sqlite3.OperationalError) -> bool:
-    # Python 3.10 lacks sqlite_errorcode and SQLITE_BUSY.
-    busy = getattr(sqlite3, "SQLITE_BUSY", 5)
-    code = getattr(
-        error,
-        "sqlite_errorcode",
-        busy if str(error) == "database is locked" else None,
-    )
-    return bool(code == busy)
+    return getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
 
 
 class Store(Pagination):

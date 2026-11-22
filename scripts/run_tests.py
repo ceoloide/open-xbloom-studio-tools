@@ -46,7 +46,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import IO, Protocol, TypeVar
+from typing import IO, Protocol
 
 from scripts import testroot
 
@@ -85,7 +85,6 @@ class Process(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
 
-T = TypeVar("T")
 Spawn = Callable[[Sequence[str], Mapping[str, str], IO[bytes]], Process]
 Signal = Callable[[int, int], None]
 
@@ -228,14 +227,17 @@ def failed_ids(outcome: Outcome) -> list[str]:
 
 
 def test_id(header: str, module: str) -> str | None:
-    """``pkg.C.test_y`` from a 3.10 or a 3.11+ failure header in ``module``."""
+    """``pkg.C.test_y`` from a unittest failure header in ``module``."""
     match = HEADER.match(header)
     if not match:
         return None
     name, where = match.groups()
-    found = where if where.endswith(f".{name}") else f"{where}.{name}"
-    if name.startswith("test") and found.startswith(f"{module}."):
-        return found
+    if (
+        name.startswith("test")
+        and where.endswith(f".{name}")
+        and where.startswith(f"{module}.")
+    ):
+        return where
     return None
 
 
@@ -494,7 +496,7 @@ def execute(
     return sorted(outcomes, key=lambda outcome: outcome.index)
 
 
-def take(done: queue.SimpleQueue[T], idle: Callable[[], None]) -> T:
+def take[T](done: queue.SimpleQueue[T], idle: Callable[[], None]) -> T:
     """The next item of ``done``; call ``idle`` before each wait for it.
 
     The kernel may hand a process-directed signal to a worker thread, and

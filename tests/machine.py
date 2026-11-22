@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 
 from tests.frames import reply, u32
 from xbloom_studio import Interaction, ScriptedConnector, SimulatedStudio
@@ -86,11 +85,11 @@ async def blocked_write(machine, task):
 
 
 def expect_shielded_failures(test, count):
-    """Collect the asyncio errors a test causes on purpose behind a shield.
+    """Collect the asyncio errors early Python 3.14 logs for a cancelled shield.
 
-    Python 3.14 logs an exception raised by a shielded future whose caller was
-    cancelled; earlier versions do not. Every other context still reaches the
-    loop's default handler.
+    Early Python 3.14 releases attach ``asyncio.tasks._log_on_exception`` when
+    a shield's caller is cancelled; later 3.14 patch releases and Python 3.15
+    removed that callback. Every other context still reaches the default handler.
     """
     loop = asyncio.get_running_loop()
     seen = []
@@ -104,5 +103,5 @@ def expect_shielded_failures(test, count):
 
     test.addCleanup(loop.set_exception_handler, loop.get_exception_handler())
     loop.set_exception_handler(handler)
-    expected = count if sys.version_info >= (3, 14) else 0
+    expected = count if hasattr(asyncio.tasks, "_log_on_exception") else 0
     test.addCleanup(lambda: test.assertEqual(len(seen), expected, seen))

@@ -21,7 +21,7 @@ experimental opt-in.
 
 ## Install
 
-Python 3.10 or newer. Install the source from the default branch in a fresh
+Python 3.14 or newer. Install the source from the default branch in a fresh
 virtual environment with the extras you need:
 `ble` for local Bluetooth through [Bleak](https://github.com/hbldh/bleak) and
 `mcp` for the MCP server. The core library has no dependencies.

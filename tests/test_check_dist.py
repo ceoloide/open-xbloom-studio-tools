@@ -37,7 +37,7 @@ METADATA = (
     f"Version: {VERSION}\n"
     "License-Expression: MIT\n"
     "License-File: LICENSE\n"
-    "Requires-Python: >=3.10\n"
+    "Requires-Python: >=3.14\n"
 )
 ENTRY_POINTS = (
     b"[console_scripts]\n"
