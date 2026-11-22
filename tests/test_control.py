@@ -1247,7 +1247,6 @@ class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
             handles = []
 
             def start(packet, m=m, handles=handles, delay=delay):
-                time.sleep(0.05)
                 handles.append(
                     loop.call_later(delay, lambda: (m.emit(3500), m.state(0x22)))
                 )
