@@ -947,7 +947,7 @@ ORPHAN = (
     "ctypes.CDLL(None).prctl(1, signal.SIGTERM)\n"
     "if os.getppid() != int(sys.argv[2]):\n"
     "    orphaned()\n" + record("grandchild") + "print(os.getpid(), flush=True)\n"
-    "time.sleep(20)\n"
+    "time.sleep(120)\n"
 )
 
 
@@ -977,7 +977,7 @@ def hangs(marker, parent=None):
         f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
         f" {str(marker)!r}, str(os.getpid())], stdout=subprocess.PIPE, text=True)\n"
         "print(grandchild.stdout.readline().strip(), flush=True)\n"
-        "time.sleep(20)\n"
+        "time.sleep(120)\n"
     )
 
 
@@ -1054,10 +1054,8 @@ class RealWorkerTests(NestedRootCase):
     @unittest.skipUnless(LINUX, "uses prctl and /proc")
     def test_interrupting_the_runner_leaves_no_fixture_running(self):
         targets = [
-            "tests.test_run_tests.RealWorkerTests"
-            ".test_a_timeout_kills_the_workers_whole_group",
-            "tests.test_ssh_rpc.CarrierTests"
-            ".test_output_limits_and_timeouts_reap_the_process_group",
+            "tests.test_run_tests.RealWorkerTests.hang_until_interrupted",
+            "tests.test_ssh_rpc.CarrierTests.hang_until_interrupted",
         ]
         for signum in (signal.SIGINT, signal.SIGTERM):
             with self.subTest(signal=signum.name):
@@ -1075,9 +1073,9 @@ class RealWorkerTests(NestedRootCase):
                 )
                 # SIGTERM lets the runner stop its own workers; kill is a last resort.
                 self.addCleanup(stop, runner)
-                # A nested worker, its grandchild and a fake ssh, all alive.
-                deadline = time.monotonic() + 30
-                while not {"worker", "grandchild", "ssh"} <= roles(pids, live=True):
+                deadline = time.monotonic() + 90
+                fixtures = {"worker", "grandchild", "ssh", "descendant"}
+                while not fixtures <= roles(pids, live=True):
                     self.assertLess(time.monotonic(), deadline)
                     self.assertIsNone(runner.poll(), "finished before the interrupt")
                     time.sleep(0.01)
@@ -1137,6 +1135,11 @@ class RealWorkerTests(NestedRootCase):
             time.sleep(0.05)
         self.assertTrue(gone(grandchild))
         self.assertFalse(marker.exists(), "outlived its parent, so not group-killed")
+
+    def hang_until_interrupted(self):
+        """The interrupt test's target; its fixtures end on their own after 120 s."""
+        hanging = [sys.executable, "-c", hangs(self.base / "orphaned")]
+        run_tests.spawn(hanging, os.environ, subprocess.DEVNULL).wait()
 
 
 if __name__ == "__main__":
