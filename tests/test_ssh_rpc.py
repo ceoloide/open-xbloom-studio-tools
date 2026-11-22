@@ -220,9 +220,11 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
             while not pids.read_text().endswith(" descendant\n"):
                 self.assertFalse(call.done())
                 await asyncio.sleep(0.01)
-        call.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await call
+        # Its deadline passes only now that it is armed: a real timeout.
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "time", lambda now=loop.time: now() + 60):
+            with self.assertRaisesRegex(ConnectionError, "timed out"):
+                await call
         pid = int(pids.read_text().splitlines()[-1].split()[0])
         self.assertTrue(await exited(pid))
         # It died with the group, not because its parent died first.
