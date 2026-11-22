@@ -4,6 +4,8 @@ import asyncio
 import struct
 import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from tests.frames import frame, identity_block, reply, u32
 from tests.machine import Machine, blocked_write, interaction, transmitted, until
@@ -16,6 +18,7 @@ from xbloom_studio import (
     Studio,
     UnsupportedStageError,
     UntestedOperationError,
+    control,
 )
 from xbloom_studio.control import STOP_CODES
 from xbloom_studio.machine_controls import EncodedTeaRecipe
@@ -27,8 +30,10 @@ class Hooks:
         self.session = session
         self.fail = set(fail)
         self.log = []
+        self.times = {}
 
     async def before_write(self, packet, frame_bytes):
+        self.times.setdefault(packet.command, time.monotonic())
         prepared = self.session._prepared if self.session else None
         self.log.append(("before", packet.command, prepared is not None))
         if packet.command in self.fail or "all" in self.fail:
@@ -1241,27 +1246,21 @@ class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         for delay, duration, completed in ((0.2, 0.3, True), (0.4, 0.1, False)):
             m = Machine()
-            times = {}
+            hooks = Hooks()
             handles = []
 
-            def start(packet, m=m, times=times, handles=handles, delay=delay):
-                times[3500] = time.monotonic()
+            def start(packet, m=m, handles=handles, delay=delay):
                 handles.append(
                     loop.call_later(delay, lambda: (m.emit(3500), m.state(0x22)))
                 )
                 return []
 
-            def stop(packet, m=m, times=times):
-                times[3505] = time.monotonic()
-                return m.studio(packet)
-
             m.overrides[3500] = start
-            m.overrides[3505] = stop
-            async with interaction(m, ack_timeout=1) as session:
+            async with interaction(m, ack_timeout=1, command_hooks=hooks) as session:
                 result = await (
                     await session.start_grinder(size=5, rpm=80, duration_s=duration)
                 ).wait()
-                elapsed = times[3505] - times[3500]
+                elapsed = hooks.times[3505] - hooks.times[3500]
                 self.assertGreaterEqual(elapsed, duration)
                 self.assertLess(elapsed, duration + 0.15)
                 self.assertEqual(m.codes().count(3500), 1)
@@ -2481,20 +2480,26 @@ class LifecycleRoundFiveTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_unfinished_frame_blocks_the_link(m, session, result)
 
     async def test_due_write_deadline_forbids_next_chunk_before_timer_callback(self):
-        class InlineSlowWrite(Machine):
+        bound = 5
+        skew = 0
+
+        class LateAfterFirstChunk(Machine):
             overlap = False
 
             async def write(self, data):
+                nonlocal skew
                 await super().write(data)
                 if data[:1] == b"\x58" and data[3:5] == (4506).to_bytes(2, "little"):
-                    # No yield between this write and the next chunk. The
-                    # timer is due, but its callback cannot run yet.
-                    time.sleep(0.06)
+                    # The write bound passes with no yield before the next
+                    # chunk, so its timer callback cannot run yet.
+                    skew = bound
 
-        m = InlineSlowWrite()
-        session, result = await self.interrupted_start(m, write_timeout=0.02)
-        self.assertIn("write_timeout", result["error"])
-        await self.assert_unfinished_frame_blocks_the_link(m, session, result)
+        clock = SimpleNamespace(monotonic=lambda: time.monotonic() + skew)
+        m = LateAfterFirstChunk()
+        with mock.patch.object(control, "time", clock):
+            session, result = await self.interrupted_start(m, write_timeout=bound)
+            self.assertIn("write_timeout", result["error"])
+            await self.assert_unfinished_frame_blocks_the_link(m, session, result)
 
     async def test_late_final_write_ack_after_swallowed_timeout_cannot_succeed(self):
         class LateAck(Stalling):
