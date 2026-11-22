@@ -284,6 +284,8 @@ class CoffeeRecipeTest(unittest.TestCase):
 
 class TeaRecipeTest(unittest.TestCase):
     def test_tea_limit_boundaries(self):
+        published = recipe_constraints()["tea"]["dose_g"]
+        self.assertEqual((published["minimum"], published["maximum"]), (1, 5))
         # dose_g is a non-strict number rule, so fractions just outside count.
         for dose, expected in [
             (1, set()),
@@ -301,6 +303,35 @@ class TeaRecipeTest(unittest.TestCase):
             document = tea()
             document["tea"]["steeps"][0]["temperature"] = temperature
             with self.subTest(temperature=temperature):
+                self.assertEqual(paths(document), expected)
+
+    def test_tea_steep_limit_boundaries(self):
+        for key, value, valid in [
+            ("volume_ml", 0, False),
+            ("volume_ml", 1, True),
+            ("volume_ml", 90, True),
+            ("volume_ml", 91, False),
+            ("steep_seconds", 360, True),
+            ("steep_seconds", 361, False),
+        ]:
+            document = tea()
+            document["tea"]["steeps"][0][key] = value
+            expected = set() if valid else {"/tea/steeps/0/" + key}
+            with self.subTest(key=key, value=value):
+                self.assertEqual(paths(document), expected)
+        flow = recipe_constraints()["tea"]["steeps"]["properties"]["flow_ml_s"]
+        self.assertEqual(flow["enum"], [3, 3.1, 3.2, 3.3, 3.4, 3.5])
+
+    def test_tea_steep_count_boundaries(self):
+        for count, expected in [
+            (0, {"/tea/steeps"}),
+            (1, set()),
+            (3, set()),
+            (4, {"/tea/steeps"}),
+        ]:
+            document = tea()
+            document["tea"]["steeps"] *= count
+            with self.subTest(count=count):
                 self.assertEqual(paths(document), expected)
 
     def test_tea_bounds_and_warnings(self):
