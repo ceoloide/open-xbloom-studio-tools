@@ -13,7 +13,7 @@ import asyncio
 import importlib
 from collections.abc import Callable
 from contextlib import suppress
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from .connector import (
     DEFAULT_WRITE_SIZE,
@@ -104,6 +104,31 @@ class FrameTransport(Transport, Protocol):
     """Transport that also accepts encoded control frames."""
 
     async def _write_frame(self, frame: bytes) -> None: ...
+
+
+@runtime_checkable
+class GuardedTransport(Transport, Protocol):
+    """Transport supporting per-call handshake timing hooks and byte transcripts."""
+
+    event_sink: EventSink | None
+
+    async def open_session_guarded(
+        self, *, on_transmit: Callable[[], None] | None = None
+    ) -> None: ...
+
+
+@runtime_checkable
+class GuardedFrameTransport(GuardedTransport, FrameTransport, Protocol):
+    """Frame transport supporting per-call guards and chunk-level transmit hooks."""
+
+    async def _write_frame_guarded(
+        self,
+        frame: bytes,
+        *,
+        command_guard: Callable[[], None] | None = None,
+        on_transmit: Callable[[], None] | None = None,
+        on_chunk: Callable[[bool], None] | None = None,
+    ) -> None: ...
 
 
 class CommandHooks(Protocol):
@@ -251,9 +276,6 @@ class BleakTransport:
     by ``ble.outgoing_chunk_withheld`` with the same bytes.
     """
 
-    command_guard_after_journal = True
-    transmit_hook_before_final_chunk = True
-
     def __init__(
         self,
         device: object = None,
@@ -261,6 +283,7 @@ class BleakTransport:
         *,
         connector: Connector | None = None,
         hooks: CommandHooks | None = None,
+        event_sink: EventSink | None = None,
     ) -> None:
         if connector is None:
             if device is None:
@@ -273,17 +296,7 @@ class BleakTransport:
         self.device = device if device is not None else connector.identity
         self.timeout = timeout
         self.hooks = hooks
-        self.event_sink: EventSink | None = None
-        # Runs after hooks.before_write and the first chunk's transcript
-        # observer, immediately before the first byte.
-        self.command_guard: Callable[[], None] | None = None
-        # Runs after the final chunk's observer, immediately before the chunk
-        # that completes the frame: the earliest moment the machine can act
-        # on, or acknowledge, the command.
-        self.on_transmit: Callable[[], None] | None = None
-        # Runs before each chunk's ``on_transmit``, after its other checks,
-        # with whether the chunk completes the frame; raising withholds it.
-        self.on_chunk: Callable[[bool], None] | None = None
+        self.event_sink: EventSink | None = event_sink
         self._subscribed = False
         # True while an interrupted stop_notify leaves notifications unknown.
         self._notify_unknown = False
@@ -315,10 +328,19 @@ class BleakTransport:
             await self.connector.stop_notify()
             self._notify_unknown = False
 
-    async def open_session(self) -> None:
+    async def open_session_guarded(
+        self, *, on_transmit: Callable[[], None] | None = None
+    ) -> None:
         if not self._subscribed:
             raise RuntimeError("Subscribe before opening session")
-        await self._send(HANDSHAKE, validate_handshake(HANDSHAKE))
+        await self._send(
+            HANDSHAKE,
+            validate_handshake(HANDSHAKE),
+            on_transmit=on_transmit,
+        )
+
+    async def open_session(self) -> None:
+        await self.open_session_guarded()
 
     async def read_information(self, name: str) -> str | None:
         return await self.connector.read_information(check_information_field(name))
@@ -351,7 +373,15 @@ class BleakTransport:
                 journal.add_done_callback(self._journals.discard)
             journal.add_done_callback(_retrieve)
 
-    async def _send(self, frame: bytes, packet: Packet) -> None:
+    async def _send(
+        self,
+        frame: bytes,
+        packet: Packet,
+        *,
+        command_guard: Callable[[], None] | None = None,
+        on_transmit: Callable[[], None] | None = None,
+        on_chunk: Callable[[bool], None] | None = None,
+    ) -> None:
         hooks = self.hooks
         try:
             if hooks is not None:
@@ -367,15 +397,15 @@ class BleakTransport:
                 self._observe("ble.outgoing_chunk", chunk)
                 try:
                     if offset == 0:
-                        if self.command_guard is not None:
-                            self.command_guard()
+                        if command_guard is not None:
+                            command_guard()
                         if not self._subscribed or not self.connector.is_connected:
                             raise ConnectionError("No subscribed control connection")
                     final = offset + size >= len(frame)
-                    if self.on_chunk is not None:
-                        self.on_chunk(final)
-                    if final and self.on_transmit:
-                        self.on_transmit()
+                    if on_chunk is not None:
+                        on_chunk(final)
+                    if final and on_transmit is not None:
+                        on_transmit()
                 except BaseException as exc:
                     # Keep the transcript exact: the observed chunk was withheld.
                     self._observe("ble.outgoing_chunk_withheld", chunk, exc)
@@ -409,5 +439,21 @@ class ControlTransport(BleakTransport):
     are handled by the interaction, not this transport.
     """
 
+    async def _write_frame_guarded(
+        self,
+        frame: bytes,
+        *,
+        command_guard: Callable[[], None] | None = None,
+        on_transmit: Callable[[], None] | None = None,
+        on_chunk: Callable[[bool], None] | None = None,
+    ) -> None:
+        await self._send(
+            frame,
+            validate_control_frame(frame),
+            command_guard=command_guard,
+            on_transmit=on_transmit,
+            on_chunk=on_chunk,
+        )
+
     async def _write_frame(self, frame: bytes) -> None:
-        await self._send(frame, validate_control_frame(frame))
+        await self._write_frame_guarded(frame)

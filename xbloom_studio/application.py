@@ -20,7 +20,7 @@ import hmac
 import uuid
 from collections.abc import Callable
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from ._cleanup import wait_cleanup
 from .client import SessionError
@@ -42,7 +42,7 @@ from .recipes import (
     upload_requires_untested,
 )
 from .storage import ConflictError
-from .transport import BleakConnector
+from .transport import BleakConnector, GuardedTransport
 
 if TYPE_CHECKING:
     from .control import Operation
@@ -272,7 +272,8 @@ class MachineService(MachineCommandAPI):
             event_sink=recorder.emit,
             **self.options,
         )
-        cast(Any, session.transport).event_sink = recorder.emit
+        if isinstance(session.transport, GuardedTransport):
+            session.transport.event_sink = recorder.emit
         try:
             with recorder.capturing():
                 await session.__aenter__()

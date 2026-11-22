@@ -37,6 +37,7 @@ from .transport import (
     CommandHooks,
     ControlTransport,
     FrameTransport,
+    GuardedFrameTransport,
     Transport,
     validate_control_frame,
 )
@@ -832,9 +833,7 @@ class Interaction(MachineControls, ReadOnlyClient):
             expected = payload if code == 11511 else ack_payload
             key = (code, 0xC2 if function == 2 else 0xC1, expected)
             progress = _Progress()
-            progress.tracked = self._withholds_final_chunk() and hasattr(
-                self.transport, "on_chunk"
-            )
+            progress.tracked = self._withholds_final_chunk()
             loop = asyncio.get_running_loop()
             guard: Callable[[], None] | None = None
             if before_write is not None:
@@ -993,7 +992,7 @@ class Interaction(MachineControls, ReadOnlyClient):
             await super()._send_handshake()
 
     def _withholds_final_chunk(self) -> bool:
-        return bool(getattr(self.transport, "transmit_hook_before_final_chunk", False))
+        return isinstance(self.transport, GuardedFrameTransport)
 
     async def _write(
         self,
@@ -1003,29 +1002,18 @@ class Interaction(MachineControls, ReadOnlyClient):
         chunk: Callable[[bool], None],
     ) -> None:
         transport = self.transport
-        saved: dict[str, Any] = {}
-        if guard is not None and getattr(
-            transport, "command_guard_after_journal", False
-        ):
-            # The transport runs the guard after its hooks, before the first byte.
-            saved["command_guard"] = getattr(transport, "command_guard", None)
-            setattr(transport, "command_guard", guard)  # noqa: B010
-            guard = None
-        if getattr(transport, "transmit_hook_before_final_chunk", False):
-            saved["on_transmit"] = getattr(transport, "on_transmit", None)
-            setattr(transport, "on_transmit", transmit)  # noqa: B010
-            if hasattr(transport, "on_chunk"):
-                saved["on_chunk"] = transport.on_chunk
-                setattr(transport, "on_chunk", chunk)  # noqa: B010
-        try:
-            if guard is not None:
-                guard()
-            if "on_transmit" not in saved:
-                transmit()
-            await transport._write_frame(frame)
-        finally:
-            for name, value in saved.items():
-                setattr(transport, name, value)
+        if isinstance(transport, GuardedFrameTransport):
+            await transport._write_frame_guarded(
+                frame,
+                command_guard=guard,
+                on_transmit=transmit,
+                on_chunk=chunk,
+            )
+            return
+        if guard is not None:
+            guard()
+        transmit()
+        await transport._write_frame(frame)
 
     async def _prepare(self) -> None:
         if self._scale_mode:
