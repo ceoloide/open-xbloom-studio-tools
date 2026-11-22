@@ -6,6 +6,7 @@ import errno
 import hashlib
 import os
 import stat
+from contextlib import suppress
 from pathlib import Path
 from typing import TextIO
 
@@ -100,7 +101,7 @@ class AddressLease:
         if self._lock is not None:
             path, handle = self._lock
             self._lock = None
-            with handle:
+            with handle, suppress(OSError):
                 if _links(path, handle):
                     os.unlink(path)
 
