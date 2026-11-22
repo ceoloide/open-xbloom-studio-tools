@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from .command_schema import MAX_OPERATION_TIMEOUT, water_timeout
-from .diagnostics import validation_diagnostic
+from .diagnostic_catalog import validation_diagnostic
 
 Rule = dict[str, Any]
 

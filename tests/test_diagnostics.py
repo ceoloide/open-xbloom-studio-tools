@@ -5,6 +5,8 @@ import contextlib
 import io
 import json
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1643,7 +1645,7 @@ class SolR2HardeningTests(unittest.IsolatedAsyncioTestCase):
             ("string", '"a"\n"b"', 4, 12),
         ]
         with patch(
-            "xbloom_studio.diagnostics._tokenize_json", return_value=crossing_tokens
+            "xbloom_studio.json_excerpt._tokenize_json", return_value=crossing_tokens
         ):
             self.assertIsNone(extract_json_excerpt(crossing_doc, 2, 1))
         self.assertIsNone(
@@ -4795,7 +4797,7 @@ class CouncilR2FindingsTests(unittest.IsolatedAsyncioTestCase):
             seen_lengths.append(len(value))
             return real_redact(value)
 
-        with patch("xbloom_studio.diagnostics._redact_text", side_effect=spy_redact):
+        with patch("xbloom_studio.redaction._redact_text", side_effect=spy_redact):
             truncated_basic = diagnostics._truncate(huge_basic, 512)
         self.assertEqual(len(seen_lengths), 1)
         self.assertLessEqual(seen_lengths[0], diagnostics._MAX_TRUNCATE_SCAN)
@@ -5449,7 +5451,7 @@ class CouncilR3RedactionTests(unittest.TestCase):
             return real_redact(value)
 
         huge_peer_msg = "eyJaaaaaaaa-" * (32 * 1024 * 1024 // 12)
-        with patch("xbloom_studio.diagnostics._redact_text", side_effect=spy_redact):
+        with patch("xbloom_studio.redaction._redact_text", side_effect=spy_redact):
             sanitized = error_detail(
                 RemoteError(
                     {
@@ -5491,7 +5493,7 @@ class CouncilR3RedactionTests(unittest.TestCase):
             + " https://alice:password@example.com "
             + ("x" * (1024 * 1024))
         )
-        with patch("xbloom_studio.diagnostics._redact_text", side_effect=spy_redact):
+        with patch("xbloom_studio.redaction._redact_text", side_effect=spy_redact):
             san_secret = error_detail(
                 RemoteError(
                     {
@@ -5849,7 +5851,7 @@ class CouncilR4RedactionTests(unittest.TestCase):
         huge_peer = f"sb-access-token-{jwt_std} " + (
             "eyJaaaaaaaa-" * (32 * 1024 * 1024 // 12)
         )
-        with patch("xbloom_studio.diagnostics._redact_text", side_effect=spy_redact):
+        with patch("xbloom_studio.redaction._redact_text", side_effect=spy_redact):
             sanitized = error_detail(
                 RemoteError(
                     {
@@ -6132,7 +6134,7 @@ class CouncilR5BasicRedactionTests(unittest.TestCase):
             "Basic YWRtaW46cD8_c3N3MHJkPj4- Basic dXNlcjpwYXNzd29yZA==_status=401 "
             + ("Basic Profile1-v2 " * (32 * 1024 * 1024 // 18))
         )
-        with patch("xbloom_studio.diagnostics._redact_text", side_effect=spy_redact):
+        with patch("xbloom_studio.redaction._redact_text", side_effect=spy_redact):
             sanitized = error_detail(
                 RemoteError(
                     {
@@ -6154,6 +6156,28 @@ class CouncilR5BasicRedactionTests(unittest.TestCase):
         self.assertNotIn("dXNlcjpwYXNzd29yZA", sanitized["message"])
         self.assertNotIn("YWRtaW46cD8", sanitized["diagnostic"]["cause"])
         self.assertNotIn("dXNlcjpwYXNzd29yZA", sanitized["diagnostic"]["cause"])
+
+
+class DiagnosticModuleGraphTests(unittest.TestCase):
+    def test_extracted_modules_import_independently_without_diagnostics_or_errors(self):
+        for module in (
+            "xbloom_studio.redaction",
+            "xbloom_studio.json_excerpt",
+            "xbloom_studio.diagnostic_catalog",
+            "xbloom_studio.preset_diagnostics",
+        ):
+            with self.subTest(module=module):
+                script = (
+                    f"import importlib, sys; importlib.import_module({module!r}); "
+                    "assert 'xbloom_studio.diagnostics' not in sys.modules; "
+                    "assert 'xbloom_studio.errors' not in sys.modules"
+                )
+                subprocess.run(
+                    [sys.executable, "-c", script],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
 
 
 if __name__ == "__main__":

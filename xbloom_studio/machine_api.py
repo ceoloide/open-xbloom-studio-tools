@@ -25,7 +25,6 @@ from .command_schema import (
     validate_command_params,
 )
 from .control import IDLE_STATES, NO_WATER_STATE, BusyError, EncodedRecipe, Interaction
-from .diagnostics import preset_write_diagnostic
 from .machine_controls import (
     SLOTS,
     ControlPermissionError,
@@ -35,6 +34,7 @@ from .machine_controls import (
     PresetWriteError,
     SavedPreset,
 )
+from .preset_diagnostics import preset_write_diagnostic
 from .preset_writes import (
     CLOSE_PENDING,
     CLOSED,
