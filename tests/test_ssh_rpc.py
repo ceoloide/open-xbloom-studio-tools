@@ -210,6 +210,10 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
         # It died with the group, not because its parent died first.
         self.assertFalse((self.root / "orphaned").exists())
 
+    async def hang_until_interrupted(self):
+        self.mode("descendant")
+        await ssh_call("host", "service_info")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "uses prctl and /proc")
     async def test_the_fake_ssh_dies_with_its_parent(self):
         # It runs in its own session, so only this keeps an interrupted run
