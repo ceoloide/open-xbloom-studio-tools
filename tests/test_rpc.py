@@ -381,16 +381,11 @@ class LocalServerTests(ServerCase):
         self.assertEqual(server.handlers, set())
 
     async def test_default_socket_has_private_fallback_beside_existing_leases(self):
-        with (
-            patch.object(Path, "home", return_value=self.path.parent),
-            patch("pwd.getpwuid") as account,
-            patch.dict(os.environ, {"XDG_RUNTIME_DIR": ""}),
-        ):
-            account.return_value.pw_dir = self.path.parent
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": ""}):
             await self.app.machine._own()
             self.assertEqual(
                 default_socket(),
-                self.path.parent / ".local/state/xbloom-studio/run/daemon.sock",
+                Path.home() / ".local/state/xbloom-studio/run/daemon.sock",
             )
             server = await LocalServer(self.app).start()
             try:

@@ -2262,7 +2262,7 @@ class PresetRetryTests(ServiceCase):
             def read(device, armed=armed, entered=entered, gate=gate, events=events):
                 if armed and not entered.is_set():
                     entered.set()
-                    gate.wait(5)
+                    gate.wait()
                     raise sqlite3.OperationalError("database is locked")
                 return events(device)
 
@@ -2274,9 +2274,11 @@ class PresetRetryTests(ServiceCase):
                 patch.object(self.store, "preset_write_events", read),
             ):
                 task = asyncio.create_task(self.write(preset, save_timeout=0.05))
-                await until(entered.is_set, 5)
-                task.cancel()
-                gate.set()
+                try:
+                    await until(entered.is_set, 5)
+                    task.cancel()
+                finally:
+                    gate.set()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
                 write = self.latest(slot)
@@ -2538,7 +2540,7 @@ class PresetRetryTests(ServiceCase):
                 loop.call_soon(cancelled.set)
 
             loop.call_soon_threadsafe(cancel)
-            cancelled.wait(5)
+            cancelled.wait()
             raise sqlite3.OperationalError("transient")
 
         # An unverifiable start that never committed first, then one that did.
@@ -2597,7 +2599,7 @@ class PresetRetryTests(ServiceCase):
                 raise sqlite3.OperationalError("reported after commit")
             if kind == "machine.command_failed" and data["type"] == "RuntimeError":
                 entered.set()
-                release.wait(10)
+                release.wait()
             return append(kind, data, **context)
 
         with (

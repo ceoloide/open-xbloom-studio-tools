@@ -33,7 +33,7 @@ SUFFIX = re.compile(r"\.(?:json|lock|md|py|toml|yml)")
 LINE_NUMBER = re.compile(r":\d+(?:-\d+)?$")
 ASSIGNMENT = re.compile(r"([A-Za-z_]\w*)=(.*)")
 VARIABLES = {"UV_PROJECT_ENVIRONMENT", testroot.TMPBASE}
-TMPBASE_BYTES = 26
+TMPBASE_BYTES = 41
 PYTHONS = {"3.10", "3.11", "3.12", "3.13", "3.14"}
 UNKNOWN = "not a known command"
 # Commands the plan requires the real file to document.
@@ -402,13 +402,11 @@ class CheckerTests(unittest.TestCase):
             "XBLOOM_STUDIO_TEST_ROOT=x python -m scripts.presubmit": (
                 "unexpected variable XBLOOM_STUDIO_TEST_ROOT"
             ),
-            f"{testroot.TMPBASE}=/tmp/{'x' * 22} python -m scripts.presubmit": (
-                "longer than 26 bytes"
-            ),
-            # 16 characters, 27 bytes.
-            f"{testroot.TMPBASE}=/tmp/{'é' * 11} python -m scripts.presubmit": (
-                "longer than 26 bytes"
-            ),
+            f"{testroot.TMPBASE}=/tmp/{'x' * (TMPBASE_BYTES - 4)}"
+            " python -m scripts.presubmit": f"longer than {TMPBASE_BYTES} bytes",
+            # Within the limit in characters, over it in bytes.
+            f"{testroot.TMPBASE}=/tmp/{'é' * ((TMPBASE_BYTES - 3) // 2)}"
+            " python -m scripts.presubmit": f"longer than {TMPBASE_BYTES} bytes",
             "UV_PROJECT_ENVIRONMENT=.venv-310": UNKNOWN,
             "ruff format .": UNKNOWN,
             "echo 'unclosed": "No closing quotation",
@@ -432,7 +430,8 @@ class CheckerTests(unittest.TestCase):
 
     def test_accepted_prefixes(self):
         lines = (
-            f"{testroot.TMPBASE}=/tmp/{'x' * 21} python -m scripts.presubmit",
+            f"{testroot.TMPBASE}=/tmp/{'x' * (TMPBASE_BYTES - 5)}"
+            " python -m scripts.presubmit",
             "UV_PROJECT_ENVIRONMENT=.venv-314 uv run --locked --python 3.14"
             " python -m scripts.presubmit",
         )

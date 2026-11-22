@@ -110,7 +110,7 @@ leaves its workers and run root (`xbs-r-*` under /dev/shm or /tmp) to delete.
 
 - `XBLOOM_STUDIO_TEST_TMPBASE` is the only knob: the directory for new test
   roots (default: the first usable of /dev/shm and /tmp, else Python's temp
-  directory). Keep the resolved path (symlinks followed) to 26 bytes or less;
+  directory). Keep the resolved path (symlinks followed) to 41 bytes or less;
   a longer base breaks a socket-path test, under bare unittest too.
 - Never export `XBLOOM_STUDIO_TEST_ROOT`. It is internal, set by whoever creates
   a root; a stale value makes `import tests` raise.
