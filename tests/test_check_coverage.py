@@ -149,11 +149,15 @@ class PerFileGateTest(unittest.TestCase):
                 "pkg/small.py": summary(0, 19, 0, 10),
                 "pkg/edge.py": summary(12, 20, 5, 10),
                 "pkg/low.py": summary(11, 20, 5, 10),
+                "pkg/a.py": summary(0, 20, 0, 0),
             }
         )
         self.assertEqual(
             check_coverage.file_failures(files),
-            ["pkg/low.py: line coverage 55.00% is below 60.00%"],
+            [
+                "pkg/a.py: line coverage 0.00% is below 60.00%",
+                "pkg/low.py: line coverage 55.00% is below 60.00%",
+            ],
         )
 
     def test_report_without_missing_keys_still_names_file(self):
@@ -165,17 +169,43 @@ class PerFileGateTest(unittest.TestCase):
         )
         status, _, err = run_main(files)
         self.assertEqual(status, 1)
-        self.assertIn(
-            "xbloom_studio/new.py: line coverage 0.00% is below 60.00%, "
-            "branch coverage 0.00% is below 50.00%",
-            err,
+        self.assertEqual(
+            err.splitlines(),
+            [
+                "xbloom_studio: line coverage 0.00% is below 90.00%",
+                "  xbloom_studio/new.py: 300 of 300 lines uncovered",
+                "xbloom_studio: branch coverage 0.00% is below 90.00%",
+                "  xbloom_studio/new.py: 4 of 4 branches uncovered",
+                "xbloom_studio/new.py: line coverage 0.00% is below 60.00%, "
+                "branch coverage 0.00% is below 50.00%",
+            ],
         )
-        self.assertNotIn("missing", err)
 
     def test_executed_lines_split_missing_ranges(self):
         self.assertEqual(
-            check_coverage.line_ranges([8, 1, 2, 4, 7, 11], [5, 9, 10]),
+            check_coverage.line_ranges([8, 1, 2, 4, 7, 11], [9, 10, 5]),
             "1-4, 7-8, 11",
+        )
+
+    def test_without_executed_lines_ranges_join_across_gaps(self):
+        # coverage always writes executed_lines; without it no line interrupts.
+        files = {"pkg/a.py": {"summary": summary(0, 20, 0, 0), "missing_lines": [1, 5]}}
+        self.assertEqual(
+            check_coverage.file_failures(files)[1:], ["  missing lines: 1-5"]
+        )
+
+    def test_arcs_to_or_from_missing_lines_are_dropped(self):
+        files = {
+            "pkg/a.py": {
+                "summary": summary(18, 20, 1, 5),
+                "missing_lines": [10, 11],
+                "executed_lines": [3, 5, 7, 8],
+                "missing_branches": [[3, 10], [5, -1], [7, 8], [10, 11]],
+            }
+        }
+        self.assertEqual(
+            check_coverage.file_failures(files)[1:],
+            ["  missing lines: 10-11", "  missing branches: 5->exit, 7->8"],
         )
 
 
@@ -211,6 +241,32 @@ class AggregateRankingTest(unittest.TestCase):
                 "  pkg/d.py: 1 of 10 branches uncovered",
                 "  pkg/e.py: 1 of 10 branches uncovered",
                 "  pkg/f.py: 1 of 10 branches uncovered",
+            ],
+        )
+
+    def test_ranking_counts_gaps_and_breaks_ties_by_name(self):
+        files = report(
+            **{
+                "pkg/z.py": summary(0, 1, 0, 0),
+                "pkg/y.py": summary(0, 1, 0, 0),
+                "pkg/x.py": summary(0, 1, 0, 0),
+                "pkg/w.py": summary(0, 1, 0, 0),
+                "pkg/small.py": summary(1, 10, 0, 2),
+                "pkg/big.py": summary(90, 100, 0, 0),
+                "pkg/full.py": summary(100, 100, 5, 5),
+            }
+        )
+        self.assertEqual(
+            check_coverage.failures(check_coverage.group_totals(files), 90, files),
+            [
+                "pkg: line coverage 89.25% is below 90.00%",
+                "  pkg/big.py: 10 of 100 lines uncovered",
+                "  pkg/small.py: 9 of 10 lines uncovered",
+                "  pkg/w.py: 1 of 1 lines uncovered",
+                "  pkg/x.py: 1 of 1 lines uncovered",
+                "  pkg/y.py: 1 of 1 lines uncovered",
+                "pkg: branch coverage 71.43% is below 90.00%",
+                "  pkg/small.py: 2 of 2 branches uncovered",
             ],
         )
 

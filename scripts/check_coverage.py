@@ -117,11 +117,16 @@ def file_failures(files: Mapping[str, Mapping[str, Any]]) -> list[str]:
         if not low:
             continue
         result.append(f"{name}: {', '.join(low)}")
-        lines = data.get("missing_lines", [])
+        lines = set(data.get("missing_lines", []))
         if lines:
             ranges = line_ranges(lines, data.get("executed_lines", []))
             result.append(f"  missing lines: {ranges}")
-        branches = data.get("missing_branches", [])
+        # As in `coverage report -m`: an arc to or from a missing line adds nothing.
+        branches = [
+            arc
+            for arc in data.get("missing_branches", [])
+            if not lines.intersection(arc)
+        ]
         if branches:
             result.append(f"  missing branches: {arcs(branches)}")
     return result
