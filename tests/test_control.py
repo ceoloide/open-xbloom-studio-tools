@@ -2482,6 +2482,9 @@ class LifecycleRoundFiveTests(unittest.IsolatedAsyncioTestCase):
 
             async def write(self, data):
                 await super().write(data)
+                if data[:1] == b"\x58" and data[3:5] == (4510).to_bytes(2, "little"):
+                    # Load can stall the process during a frame before the start.
+                    time.sleep(0.03)
                 if data[:1] == b"\x58" and data[3:5] == (4506).to_bytes(2, "little"):
                     # No yield between this write and the next chunk. The
                     # timer is due, but its callback cannot run yet.
