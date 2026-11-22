@@ -10,7 +10,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 BATCH_SIZE = 128
 SCAN_BUDGET = 4096
@@ -208,8 +208,9 @@ class Pagination:
     db: sqlite3.Connection
     lock: threading.RLock
 
-    def operation(self, ident: str) -> dict[str, Any]:  # pragma: no cover
-        raise NotImplementedError
+    if TYPE_CHECKING:
+
+        def operation(self, ident: str) -> dict[str, Any]: ...
 
     def recipe_page(
         self,

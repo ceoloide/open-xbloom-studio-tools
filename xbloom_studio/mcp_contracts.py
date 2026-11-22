@@ -184,44 +184,36 @@ Request: Any = Annotated[
     Field(discriminator="kind"),
 ]
 
-EXAMPLE_FIELDS = (
-    "name",
-    "roaster",
-    "origin",
-    "region",
-    "type",
-    "variety",
-    "process",
-    "flavor",
-    "roast",
-)
-CoffeeExamplesInput = create_model(
-    "CoffeeExamplesInput",
-    __base__=Input,
-    **{
-        key: (
-            str | list[str] | None,
-            Field(
-                None,
-                description="Bean "
-                + key
-                + " as text or explicitly supplied categorical values.",
-            ),
-        )
-        for key in EXAMPLE_FIELDS
-    },
-)  # type: ignore[call-overload]
-CoffeeMatchInput = create_model(
-    "CoffeeMatchInput",
-    __base__=Input,
-    **{
-        key: (
-            str | None,
-            Field(None, description="Local matching " + key + " supplied by the user."),
-        )
-        for key in ("name", "roaster", "origin", "variety")
-    },
-)  # type: ignore[call-overload]
+
+def _bean_example_field(key: str) -> Any:
+    return Field(
+        None,
+        description=f"Bean {key} as text or explicitly supplied categorical values.",
+    )
+
+
+def _match_field(key: str) -> Any:
+    return Field(None, description=f"Local matching {key} supplied by the user.")
+
+
+class CoffeeExamplesInput(Input):
+    name: str | list[str] | None = _bean_example_field("name")
+    roaster: str | list[str] | None = _bean_example_field("roaster")
+    origin: str | list[str] | None = _bean_example_field("origin")
+    region: str | list[str] | None = _bean_example_field("region")
+    type: str | list[str] | None = _bean_example_field("type")
+    variety: str | list[str] | None = _bean_example_field("variety")
+    process: str | list[str] | None = _bean_example_field("process")
+    flavor: str | list[str] | None = _bean_example_field("flavor")
+    roast: str | list[str] | None = _bean_example_field("roast")
+
+
+class CoffeeMatchInput(Input):
+    name: str | None = _match_field("name")
+    roaster: str | None = _match_field("roaster")
+    origin: str | None = _match_field("origin")
+    variety: str | None = _match_field("variety")
+
 
 DESCRIPTIONS = {
     "target": "Explicit import conversion: host adaptation, structured coffee or "
