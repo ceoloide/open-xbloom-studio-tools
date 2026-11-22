@@ -949,6 +949,12 @@ ORPHAN = (
     "    orphaned()\n" + record("grandchild") + "print(os.getpid(), flush=True)\n"
     "time.sleep(120)\n"
 )
+# A grandchild in its own session, so outside its worker's group, that does
+# not die with its parent. It ignores its argv, which names the marker for
+# kill_fixture. Prints its pid once in its session.
+SESSION = (
+    "import os, time\nos.setsid()\nprint(os.getpid(), flush=True)\ntime.sleep(120)\n"
+)
 
 
 # Runs the runner in its own session, so killing this process's group does
@@ -964,17 +970,17 @@ INTERRUPTIBLE = (
 )
 
 
-def hangs(marker, parent=None):
+def hangs(marker, parent=None, grandchild=ORPHAN):
     """A worker that dies with its parent (this process unless given),
-    survives SIGUSR1 like a worker with the stack dump, starts a grandchild
-    in its process group (the worker's) and hangs."""
+    survives SIGUSR1 like a worker with the stack dump, starts ``grandchild``
+    (by default one in its process group, the worker's) and hangs."""
     return (
         "import ctypes, os, signal, subprocess, sys, time\n"
         "ctypes.CDLL(None).prctl(1, signal.SIGKILL)\n"
         f"if os.getppid() != {parent or os.getpid()}:\n"
         "    sys.exit(1)\n" + record("worker") + "signal.signal(signal.SIGUSR1,"
         " lambda *_: print('dump', flush=True))\n"
-        f"grandchild = subprocess.Popen([sys.executable, '-c', {ORPHAN!r},"
+        f"grandchild = subprocess.Popen([sys.executable, '-c', {grandchild!r},"
         f" {str(marker)!r}, str(os.getpid())], stdout=subprocess.PIPE, text=True)\n"
         "print(grandchild.stdout.readline().strip(), flush=True)\n"
         "time.sleep(120)\n"
@@ -1144,6 +1150,48 @@ class RealWorkerTests(NestedRootCase):
             time.sleep(0.05)
         self.assertTrue(gone(grandchild))
         self.assertFalse(marker.exists(), "outlived its parent, so not group-killed")
+
+    @unittest.skipUnless(LINUX, "uses prctl and /proc")
+    def test_a_grandchild_in_its_own_session_ends_with_the_run(self):
+        for interrupt in (False, True):
+            with self.subTest("interrupt" if interrupt else "timeout"):
+                self.assertTrue(gone(self.run_with_a_session_grandchild(interrupt)))
+
+    def run_with_a_session_grandchild(self, interrupt):
+        """Run a worker whose grandchild is in its own session until it times
+        out or, with ``interrupt``, the run is interrupted; the grandchild's pid."""
+        marker = self.base / "orphaned"
+        grandchildren = []
+
+        def spawn(argv, env, output):
+            process = spawn_armed(argv, env, output)
+            grandchildren.append(int(Path(output.name).read_text()))
+            self.addCleanup(kill_fixture, grandchildren[0], marker)
+            if interrupt:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return process
+
+        def run():
+            return run_tests.execute(
+                {"tests.test_a": ["tests.test_a"]},
+                jobs=1,
+                out=io.StringIO(),
+                spawn=spawn,
+                timeout=60 if interrupt else 2,
+                grace=0.2,
+                build=lambda targets, data: [
+                    sys.executable,
+                    "-c",
+                    hangs(marker, grandchild=SESSION),
+                ],
+                signals=(signal.SIGTERM,),
+            )
+
+        if interrupt:
+            self.assertRaises(run_tests.Interrupted, run)
+        else:
+            self.assertEqual(run()[0].status, "TIMEOUT")
+        return grandchildren[0]
 
     def hang_until_interrupted(self):
         """The interrupt test's target; its fixtures end on their own after 120 s."""
