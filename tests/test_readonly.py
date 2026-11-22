@@ -956,6 +956,30 @@ class LeaseTests(unittest.TestCase):
         with self.assertRaises(LeaseBusyError):
             AddressLease(key).acquire()
 
+    def test_release_is_quiet_when_its_file_vanishes_before_unlink(self):
+        unlink = os.unlink
+
+        def vanish_first(path):
+            unlink(path)
+            unlink(path)
+
+        self.assert_release_is_quiet(vanish_first)
+
+    def test_release_is_quiet_when_unlink_is_denied(self):
+        self.assert_release_is_quiet(PermissionError)
+
+    def assert_release_is_quiet(self, unlink_effect):
+        key = f"quiet:{uuid.uuid4().hex}"
+        lease = AddressLease(key)
+        lease.acquire()
+        with mock.patch("os.unlink", side_effect=unlink_effect) as unlink:
+            lease.release()
+        unlink.assert_called_once()
+        self.assertFalse(lease.held)
+        successor = AddressLease(key)
+        successor.acquire()
+        successor.release()
+
     def test_contending_processes_never_hold_one_lease_together(self):
         key = f"contended:{uuid.uuid4().hex}"
         before = lock_files()
