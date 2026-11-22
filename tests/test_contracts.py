@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import tests  # noqa: F401 - installs the test guards
 from xbloom_studio.mcp_server import GROUPS, create_server
@@ -141,30 +143,79 @@ def mismatch(old: dict[str, Any], new: dict[str, Any]) -> str | None:
     return None if path is None else f"MCP tools: contract differs at {path}"
 
 
+def compare(document: dict[str, Any]) -> str | None:
+    """Why ``document`` does not match the golden; with UPDATE_CONTRACTS=1,
+    rewrite the golden first and fail only if that changed it."""
+    text = json.dumps(document, indent=1, sort_keys=True) + "\n"
+    saved = GOLDEN.read_text() if GOLDEN.exists() else None
+    if os.environ.get("UPDATE_CONTRACTS") == "1":
+        if saved == text:
+            return None
+        GOLDEN.parent.mkdir(exist_ok=True)
+        GOLDEN.write_text(text)
+        return (
+            f"golden rewritten: review the diff of {GOLDEN.name}, explain"
+            " it in the PR body, and rerun without UPDATE_CONTRACTS"
+        )
+    hint = f"If the change is intended, run: {UPDATE}"
+    try:
+        golden = json.loads(saved or "")
+    except ValueError:
+        return f"{GOLDEN.name} is missing or not JSON\n{hint}"
+    if not (
+        isinstance(golden, dict)
+        and isinstance(golden.get("tools"), dict)
+        and isinstance(golden.get("$defs"), dict)
+    ):
+        return f"{GOLDEN.name} needs top-level $defs and tools objects\n{hint}"
+    problem = mismatch(golden, document)
+    if problem is not None:
+        return f"{problem}\n{hint}"
+    if saved != text:
+        return f"{GOLDEN.name} is not in its canonical format\n{hint}"
+    return None
+
+
 class ContractTests(unittest.TestCase):
     def test_tool_inputs_match_the_golden(self):
-        document = current()
-        text = json.dumps(document, indent=1, sort_keys=True) + "\n"
-        saved = GOLDEN.read_text() if GOLDEN.exists() else None
-        if os.environ.get("UPDATE_CONTRACTS") == "1":
-            if saved != text:
-                GOLDEN.parent.mkdir(exist_ok=True)
-                GOLDEN.write_text(text)
-                self.fail(
-                    f"golden rewritten: review the diff of {GOLDEN.name}, explain"
-                    " it in the PR body, and rerun without UPDATE_CONTRACTS"
-                )
-            return
-        hint = f"If the change is intended, run: {UPDATE}"
-        try:
-            golden = json.loads(saved or "")
-        except ValueError:
-            self.fail(f"{GOLDEN.name} is missing or not JSON\n{hint}")
-        problem = mismatch(golden, document)
+        problem = compare(current())
         if problem is not None:
-            self.fail(f"{problem}\n{hint}")
-        if saved != text:
-            self.fail(f"{GOLDEN.name} is not in its canonical format\n{hint}")
+            self.fail(problem)
+
+    def test_update_fails_only_when_it_changes_the_golden(self):
+        document = {"$defs": {}, "tools": {}}
+        text = json.dumps(document, indent=1, sort_keys=True) + "\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            golden = Path(tmp) / "mcp_tools.json"
+            golden.write_text("{}")
+            with (
+                patch(f"{__name__}.GOLDEN", golden),
+                patch.dict(os.environ, {"UPDATE_CONTRACTS": "1"}),
+            ):
+                self.assertIn("golden rewritten", compare(document) or "")
+                self.assertEqual(golden.read_text(), text)
+                self.assertIsNone(compare(document))
+
+    def test_golden_problems_print_the_update_command(self):
+        document = {"$defs": {}, "tools": {}}
+        broken = {
+            "missing": None,
+            "not JSON": "{",
+            "a list": "[]",
+            "no tools": '{"$defs": {}}',
+            "tools not an object": '{"$defs": {}, "tools": []}',
+            "not canonical": json.dumps(document),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            golden = Path(tmp) / "mcp_tools.json"
+            with patch(f"{__name__}.GOLDEN", golden), patch.dict(os.environ):
+                os.environ.pop("UPDATE_CONTRACTS", None)
+                for case, saved in broken.items():
+                    with self.subTest(case=case):
+                        golden.unlink(missing_ok=True)
+                        if saved is not None:
+                            golden.write_text(saved)
+                        self.assertIn(UPDATE, compare(document) or "")
 
 
 class ProjectionTests(unittest.TestCase):
@@ -196,7 +247,7 @@ class ProjectionTests(unittest.TestCase):
         )
 
     def test_strip_drops_only_an_optional_any(self):
-        for branches in OPTIONAL_ANY:
+        for branches in ([{}, {"type": "null"}], [{"type": "null"}, {}]):
             optional_any = {"anyOf": branches, "default": None}
             self.assertEqual(strip(optional_any), {"default": None})
         for kept in (
@@ -245,6 +296,10 @@ class ProjectionTests(unittest.TestCase):
     def test_missing_top_level_keys_name_the_tool(self):
         cases = {
             "recipe_get": ({"properties": {}}, "no top-level additionalProperties"),
+            "history_get": (
+                {"additionalProperties": False},
+                "no top-level properties",
+            ),
             "machine_command": (
                 {"properties": {}, "additionalProperties": False},
                 "no top-level oneOf",

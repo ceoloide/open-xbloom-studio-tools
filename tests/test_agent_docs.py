@@ -11,6 +11,7 @@ import shlex
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from unittest.mock import patch
 
 import tests  # noqa: F401 - installs the test guards
 from scripts import presubmit, run_tests, testroot
@@ -145,8 +146,13 @@ def check_command(line: str) -> str | None:
         words = split(line)
     except ValueError as error:
         return str(error)
-    if not words or shlex.join(words) == UPDATE:
+    if not words:
         return None
+    # UPDATE_CONTRACTS is allowed only as the documented update command,
+    # spelled unquoted, so that sh treats it as an assignment.
+    assignment = UPDATE.split()[0]
+    if shlex.join(words) == UPDATE and line.split()[0] == assignment:
+        words.pop(0)
     while words and (assignment := ASSIGNMENT.fullmatch(words[0])):
         name, value = assignment.groups()
         if name not in VARIABLES:
@@ -390,6 +396,9 @@ class CheckerTests(unittest.TestCase):
                 "unexpected variable UPDATE_CONTRACTS"
             ),
             UPDATE.replace("=1", "=0"): "unexpected variable UPDATE_CONTRACTS",
+            "'UPDATE_CONTRACTS=1'" + UPDATE.removeprefix("UPDATE_CONTRACTS=1"): (
+                "unexpected variable UPDATE_CONTRACTS"
+            ),
             "XBLOOM_STUDIO_TEST_ROOT=x python -m scripts.presubmit": (
                 "unexpected variable XBLOOM_STUDIO_TEST_ROOT"
             ),
@@ -410,6 +419,16 @@ class CheckerTests(unittest.TestCase):
                 self.assertEqual(len(problems), 1, problems)
                 self.assertTrue(problems[0].startswith(f"{line}: "), problems)
                 self.assertIn(expected, problems[0][len(line) + 2 :])
+
+    def test_update_command_is_still_validated(self):
+        cases = {
+            "tests.test_contractz": "does not load: tests.test_contractz",
+            "--bogus tests.test_contracts": "does not load: --bogus",
+        }
+        for args, expected in cases.items():
+            update = f"UPDATE_CONTRACTS=1 uv run --locked python -m unittest {args}"
+            with self.subTest(update=update), patch(f"{__name__}.UPDATE", update):
+                self.assertIn(expected, check_command(update) or "")
 
     def test_accepted_prefixes(self):
         lines = (
