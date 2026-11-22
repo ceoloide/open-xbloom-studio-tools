@@ -502,6 +502,25 @@ class PaginationTest(StoreTestCase):
         with self.assertRaisesRegex(ValueError, "either"):
             store.event_page(after=1, cursor=cursor)
 
+    def test_event_cursor_id_upper_bound(self):
+        def cursor(event_id):
+            value = {
+                "v": 1,
+                "resource": "events",
+                "filters": {"operation_id": None},
+                "position": [event_id],
+            }
+            raw = json.dumps(value).encode()
+            return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+        page = self.store.event_page(cursor=cursor(9223372036854775807))
+        self.assertEqual((page["items"], page["has_more"]), ([], False))
+        with self.assertRaisesRegex(
+            ValueError,
+            "^cursor event ID must be an integer from 1 to 9223372036854775807$",
+        ):
+            self.store.event_page(cursor=cursor(9223372036854775808))
+
     def test_history_pages_filters_and_compact_projection(self):
         store = self.store
         plan = {**compile_recipe(tea()), "recipe_id": "r", "recipe_revision": 1}
