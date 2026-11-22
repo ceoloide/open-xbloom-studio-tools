@@ -84,10 +84,9 @@ elif mode == "hang":
     time.sleep(10)
 elif mode == "descendant":
     orphaned = str(audit.parent / "orphaned")
-    child = subprocess.Popen(
+    subprocess.Popen(
         [sys.executable, "-c", DESCENDANT_SOURCE, str(os.getpid()), orphaned]
     )
-    (audit.parent / "descendant").write_text(str(child.pid))
     time.sleep(120)
 elif mode == "truncated":
     sys.stdout.write('{"ok":true,"data":1}')
@@ -109,6 +108,16 @@ async def exited(pid, timeout=3.0):
             return True
         await asyncio.sleep(0.01)
     return False
+
+
+def running(program):
+    """Pids running ``program``; a zombie's command line is empty, so not one."""
+    pids = []
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        with contextlib.suppress(OSError):
+            if os.fsencode(program) in cmdline.read_bytes().split(b"\0"):
+                pids.append(int(cmdline.parent.name))
+    return pids
 
 
 def quiet_asyncio(test):
@@ -202,10 +211,19 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
         self.mode("hang")
         with self.assertRaisesRegex(ConnectionError, "timed out"):
             await ssh_call("host", "service_info", timeout=0.5)
+        self.assertEqual(running(self.root / "ssh"), [])
         self.mode("descendant")
-        with self.assertRaises(ConnectionError):
-            await ssh_call("host", "service_info", timeout=1)
-        pid = int((self.root / "descendant").read_text())
+        pids = self.root / "pids"
+        pids.touch()
+        with patch.dict(os.environ, XBS_TEST_PIDS=str(pids)):
+            call = asyncio.create_task(ssh_call("host", "service_info", timeout=60))
+            while not pids.read_text().endswith(" descendant\n"):
+                self.assertFalse(call.done())
+                await asyncio.sleep(0.01)
+        call.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await call
+        pid = int(pids.read_text().splitlines()[-1].split()[0])
         self.assertTrue(await exited(pid))
         # It died with the group, not because its parent died first.
         self.assertFalse((self.root / "orphaned").exists())
