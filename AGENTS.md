@@ -67,9 +67,6 @@ where it can read them, else the module. Known limits: a descendant that starts
 its own session survives the kill; a runner killed by SIGKILL, SIGHUP or SIGQUIT
 leaves its workers and run root (`xbs-r-*` under /dev/shm or /tmp) to delete.
 
-Known rare flake: `tests.test_control.ReviewRegressionTests.test_grinder_pulse_is_budgeted_from_the_start_frame`
-can fail under heavy load. Rerun it before chasing it.
-
 ## Rules enforced by a check
 
 - Offline: tests may connect only to loopback and local Unix sockets
