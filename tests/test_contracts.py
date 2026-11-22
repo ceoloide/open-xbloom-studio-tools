@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import tests  # noqa: F401 - installs the test guards
+from xbloom_studio import (
+    cli,
+    command_schema,
+    control,
+    facade,
+    machine_api,
+    machine_controls,
+    mcp_contracts,
+    mcp_server,
+    ssh_rpc,
+    storage,
+)
 from xbloom_studio.mcp_server import GROUPS, create_server
 
 GOLDEN = Path(__file__).with_name("contracts") / "mcp_tools.json"
@@ -291,6 +305,178 @@ class ProjectionTests(unittest.TestCase):
             with self.subTest(tool=name):
                 with self.assertRaisesRegex(AssertionError, f"{name}: {message}"):
                     project({name: ("machine", fake(schema))})
+
+
+NON_MCP_APP_METHODS = frozenset(
+    {
+        "history_backup",
+        "history_event_page",
+        "history_page",
+        "provider_write",
+        "recipe_page",
+        "service_info",
+    }
+)
+NON_SSH_APP_METHODS = frozenset({"history_backup", "provider_write"})
+
+
+def assert_surface_parity(
+    *,
+    app_methods: set[str],
+    mcp_registered: set[str],
+    mcp_outputs: set[str],
+    mcp_annotations: Mapping[str, set[str]],
+    remote_methods: set[str],
+    retained_methods: set[str],
+    command_schemas: set[str],
+    machine_commands: set[str],
+    untested_methods: set[str],
+    interaction_methods: set[str],
+) -> None:
+    if mcp_outputs != mcp_registered:
+        raise AssertionError(
+            f"MCP outputs/registered mismatch: {sorted(mcp_outputs ^ mcp_registered)}"
+        )
+    if (mcp_registered & NON_MCP_APP_METHODS) or (
+        mcp_registered | NON_MCP_APP_METHODS
+    ) != app_methods:
+        raise AssertionError(
+            "MCP/Application parity drift: "
+            f"missing={sorted(app_methods - mcp_registered - NON_MCP_APP_METHODS)}, "
+            f"extra={sorted(mcp_registered - app_methods)}, "
+            f"overlap={sorted(mcp_registered & NON_MCP_APP_METHODS)}"
+        )
+    for label, names in mcp_annotations.items():
+        if not names <= mcp_registered:
+            raise AssertionError(
+                f"MCP annotation set {label} references unknown tools: "
+                f"{sorted(names - mcp_registered)}"
+            )
+    if (remote_methods & NON_SSH_APP_METHODS) or (
+        remote_methods | NON_SSH_APP_METHODS
+    ) != app_methods:
+        raise AssertionError(
+            "SSH RPC/Application parity drift: "
+            f"missing={sorted(app_methods - remote_methods - NON_SSH_APP_METHODS)}, "
+            f"extra={sorted(remote_methods - app_methods)}, "
+            f"overlap={sorted(remote_methods & NON_SSH_APP_METHODS)}"
+        )
+    if not retained_methods <= app_methods:
+        raise AssertionError(
+            "CLI retained methods not in Application: "
+            f"{sorted(retained_methods - app_methods)}"
+        )
+    if command_schemas != machine_commands:
+        diff = sorted(command_schemas ^ machine_commands)
+        raise AssertionError(f"command_schema/COMMANDS mismatch: {diff}")
+    if not machine_commands <= interaction_methods:
+        raise AssertionError(
+            "machine_api.COMMANDS missing on Interaction: "
+            f"{sorted(machine_commands - interaction_methods)}"
+        )
+    if not untested_methods <= interaction_methods:
+        raise AssertionError(
+            "UNTESTED_METHODS missing on Interaction: "
+            f"{sorted(untested_methods - interaction_methods)}"
+        )
+
+
+def _live_surfaces() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = storage.Store(Path(tmp) / "parity.sqlite")
+        try:
+            app_methods = set(facade.Application(store).methods)
+        finally:
+            store.close()
+    registered: set[str] = set()
+    for group in GROUPS:
+        server = create_server(caller=_noop, groups=(group,))
+        registered.update(tool.name for tool in asyncio.run(server.list_tools()))
+    interaction_methods = {
+        name
+        for name, member in inspect.getmembers(control.Interaction)
+        if callable(member) and not name.startswith("_")
+    }
+    return {
+        "app_methods": app_methods,
+        "mcp_registered": registered,
+        "mcp_outputs": set(mcp_contracts.OUTPUTS),
+        "mcp_annotations": {
+            "READ_ONLY": set(mcp_server.READ_ONLY),
+            "DESTRUCTIVE": set(mcp_server.DESTRUCTIVE),
+            "OPEN_WORLD": set(mcp_server.OPEN_WORLD),
+            "ATTEMPTS": set(mcp_server.ATTEMPTS),
+        },
+        "remote_methods": set(ssh_rpc.REMOTE_METHODS),
+        "retained_methods": set(cli.RETAINED_CONNECTION_METHODS),
+        "command_schemas": set(command_schema.COMMAND_SCHEMAS),
+        "machine_commands": set(machine_api.COMMANDS),
+        "untested_methods": set(machine_controls.MachineControls.UNTESTED_METHODS),
+        "interaction_methods": interaction_methods,
+    }
+
+
+class SurfaceParityTests(unittest.TestCase):
+    def test_live_surface_parity_holds(self):
+        assert_surface_parity(**_live_surfaces())
+
+    def test_parity_check_rejects_app_mcp_ssh_and_annotation_drift(self):
+        base = _live_surfaces()
+        with self.subTest("unknown app method"):
+            drifted = {**base, "app_methods": {*base["app_methods"], "unregistered_op"}}
+            with self.assertRaisesRegex(AssertionError, "unregistered_op"):
+                assert_surface_parity(**drifted)
+        with self.subTest("missing mcp output"):
+            sample = next(iter(base["mcp_outputs"]))
+            drifted = {**base, "mcp_outputs": base["mcp_outputs"] - {sample}}
+            with self.assertRaisesRegex(AssertionError, "outputs/registered"):
+                assert_surface_parity(**drifted)
+        with self.subTest("forbidden ssh method"):
+            drifted = {
+                **base,
+                "remote_methods": {*base["remote_methods"], "provider_write"},
+            }
+            with self.assertRaisesRegex(AssertionError, "SSH RPC/Application"):
+                assert_surface_parity(**drifted)
+        with self.subTest("unknown annotation tool"):
+            ann = {
+                **base["mcp_annotations"],
+                "READ_ONLY": {*base["mcp_annotations"]["READ_ONLY"], "bogus"},
+            }
+            with self.assertRaisesRegex(AssertionError, "bogus"):
+                assert_surface_parity(**{**base, "mcp_annotations": ann})
+        with self.subTest("unknown retained cli method"):
+            drifted = {
+                **base,
+                "retained_methods": {*base["retained_methods"], "missing_cli"},
+            }
+            with self.assertRaisesRegex(AssertionError, "CLI retained"):
+                assert_surface_parity(**drifted)
+
+    def test_parity_check_rejects_command_and_interaction_drift(self):
+        base = _live_surfaces()
+        with self.subTest("command schema mismatch"):
+            drifted = {
+                **base,
+                "command_schemas": {*base["command_schemas"], "extra_cmd"},
+            }
+            with self.assertRaisesRegex(AssertionError, "command_schema/COMMANDS"):
+                assert_surface_parity(**drifted)
+        with self.subTest("missing interaction method"):
+            sample = next(iter(base["machine_commands"]))
+            drifted = {
+                **base,
+                "interaction_methods": base["interaction_methods"] - {sample},
+            }
+            with self.assertRaisesRegex(AssertionError, "missing on Interaction"):
+                assert_surface_parity(**drifted)
+        with self.subTest("missing untested method on interaction"):
+            drifted = {
+                **base,
+                "untested_methods": {*base["untested_methods"], "phantom_untested"},
+            }
+            with self.assertRaisesRegex(AssertionError, "UNTESTED_METHODS missing"):
+                assert_surface_parity(**drifted)
 
 
 def fake(schema: dict[str, Any]) -> Any:

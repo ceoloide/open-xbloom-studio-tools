@@ -43,12 +43,11 @@ from .recipe_validation import RecipeValidationError
 from .rpc import LocalServer, call, default_socket, socket_path_exists
 from .rpc_types import RemoteError
 from .serialization import dumps
-from .storage import ConflictError, Store
+from .storage import ACTIVE_STATUSES, ConflictError, Store
 from .tea_guidance import FAMILIES
 
 DEVICE_ENVIRONMENT = "XBLOOM_STUDIO_DEVICE"
 TARGETS = ("host", "coffee", "tea")
-ACTIVE = ("accepted", "running", "waiting_for_user")
 RETAINED_CONNECTION_METHODS = (
     "machine_connect",
     "machine_disconnect",
@@ -1441,7 +1440,7 @@ async def _execute(
             return 2
         ident = raw_ident
     last = None
-    while result.get("status") in ACTIVE:
+    while result.get("status") in ACTIVE_STATUSES:
         if result["status"] == "waiting_for_user" and not remote:
             raise ValueError(
                 "Host preparation gates require a daemon caller to acknowledge "
