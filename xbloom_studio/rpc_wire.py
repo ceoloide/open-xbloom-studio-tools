@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, NoReturn
+import math
+from typing import Any
 
 from .serialization import dumps
 
@@ -20,15 +21,18 @@ def frame(
     return raw
 
 
-def _reject_constant(value: str) -> NoReturn:
-    raise ValueError("Non-finite JSON number")
+def _finite_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("Non-finite JSON number")
+    return value
 
 
 def _decode(raw: bytes, limit: int) -> Any:
     if not raw or len(raw) > limit or not raw.endswith(b"\n") or b"\n" in raw[:-1]:
         raise ValueError("RPC requires one complete bounded JSON line")
     try:
-        return json.loads(raw, parse_constant=_reject_constant)
+        return json.loads(raw, parse_constant=_finite_float, parse_float=_finite_float)
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise ValueError("Invalid RPC JSON frame") from exc
 
