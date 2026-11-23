@@ -285,8 +285,20 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_closed_input_is_uncertain(self):
         self.mode("closed")
-        with self.assertRaisesRegex(ConnectionError, "connection closed"):
-            await ssh_call("host", "recipe_validate", {"document": "x" * 1_000_000})
+        spawn = asyncio.create_subprocess_exec
+
+        async def exited_ssh(*args, **kwargs):
+            process = await spawn(*args, **kwargs)
+            await process.wait()
+            return process
+
+        with (
+            patch.object(asyncio, "create_subprocess_exec", exited_ssh),
+            self.assertRaisesRegex(
+                ConnectionError, "connection closed.*operation_lookup"
+            ),
+        ):
+            await ssh_call("host", "service_info")
 
 
 class StdIO:
