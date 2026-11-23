@@ -68,7 +68,10 @@ class CoverageGateTest(unittest.TestCase):
                     json.dumps(
                         {
                             "files": report(
-                                **{"xbloom_studio/a.py": data, "scripts/b.py": data}
+                                **{
+                                    "xbloom_studio/a.py": data,
+                                    "scripts/b.py": summary(10, 10, 1, 1),
+                                }
                             )
                         }
                     )
@@ -78,6 +81,20 @@ class CoverageGateTest(unittest.TestCase):
                     self.assertEqual(check_coverage.main([str(path)]), expected)
                 self.assertIn("xbloom_studio: line", out.getvalue())
                 self.assertEqual(bool(err.getvalue()), expected == 1)
+
+    def test_scripts_require_full_line_and_branch_coverage_by_default(self):
+        files = report(
+            **{
+                "scripts/tool.py": summary(99, 100, 99, 100),
+                "xbloom_studio/api.py": summary(90, 100, 9, 10),
+            }
+        )
+        status, _, err = run_main(files)
+        self.assertEqual(status, 1)
+        for kind in ("line", "branch"):
+            self.assertIn(f"scripts: {kind} coverage 99.00% is below 100.00%", err)
+        self.assertNotIn("xbloom_studio", err)
+        self.assertEqual(run_main(files, "--minimum", "90")[0], 0)
 
     def test_main_rejects_missing_source_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -93,13 +110,13 @@ class CoverageGateTest(unittest.TestCase):
             self.assertIn("missing coverage data for xbloom_studio", err.getvalue())
 
 
-def run_main(files):
+def run_main(files, *args):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "coverage.json"
         path.write_text(json.dumps({"files": files}))
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            status = check_coverage.main([str(path)])
+            status = check_coverage.main([str(path), *args])
     return status, out.getvalue(), err.getvalue()
 
 
