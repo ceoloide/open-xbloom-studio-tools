@@ -60,6 +60,23 @@ class WireTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rpc_wire.frame({"method": "m" * 200}, 100)
 
+    def test_finite_numbers_round_trip_at_the_rpc_boundary(self):
+        raw = b'{"method":"m","params":{"values":[-1e308,0.5,1e308]}}\n'
+        decoded = rpc_wire.request(raw)
+        self.assertEqual(decoded["params"]["values"], [-1e308, 0.5, 1e308])
+        self.assertEqual(rpc_wire.request(rpc_wire.frame(decoded, 100)), decoded)
+
+    def test_overflowing_numbers_are_invalid_rpc_json(self):
+        for decode, raw in (
+            (rpc_wire.request, b'{"method":"m","params":{"v":[1e999]}}\n'),
+            (rpc_wire.response, b'{"ok":true,"data":-1e999}\n'),
+        ):
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(ValueError, "Invalid RPC JSON frame"),
+            ):
+                decode(raw)
+
     def test_responses_are_closed_envelopes(self):
         self.assertTrue(rpc_wire.response(b'{"ok":true,"data":1}\n')["ok"])
         error = b'{"ok":false,"error":{"message":"m"}}\n'
