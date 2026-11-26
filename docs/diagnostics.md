@@ -55,6 +55,8 @@ include a canonical `diagnostic` object.
 | [`XB_PRESET_WRITE_REFUSED`](#xb_preset_write_refused) | `conflict` | Preset write refused by journal policy before sending | [Agent repair](#xb_preset_write_refused-agent-repair) |
 | [`XB_PRESET_WRITE_INCOMPLETE`](#xb_preset_write_incomplete) | `preset_write_incomplete` | Preset write did not confirm completion | [Agent repair](#xb_preset_write_incomplete-agent-repair) |
 | [`XB_MACHINE_BUSY`](#xb_machine_busy) | `busy` | Machine already owns active work or preparation | [Agent repair](#xb_machine_busy-agent-repair) |
+| [`XB_MACHINE_WATER_INSUFFICIENT`](#xb_machine_water_insufficient) | `busy` | Machine reports insufficient water; nothing was sent | [Agent repair](#xb_machine_water_insufficient-agent-repair) |
+| [`XB_MACHINE_NOT_IDLE`](#xb_machine_not_idle) | `busy` | Machine has not reported a current idle state; nothing was sent | [Agent repair](#xb_machine_not_idle-agent-repair) |
 | [`XB_OWNER_LEASE_BUSY`](#xb_owner_lease_busy) | `busy` | Another owner holds the database or machine lease | [Agent repair](#xb_owner_lease_busy-agent-repair) |
 | [`XB_CONTROL_PERMISSION_REQUIRED`](#xb_control_permission_required) | `permission_required` | Physical action requires explicit `allow_control` | [Agent repair](#xb_control_permission_required-agent-repair) |
 | [`XB_DIRECTORY_PERMISSION_REQUIRED`](#xb_directory_permission_required) | `permission_required` | Lease or socket directory fails owner-only 0700 check | [Agent repair](#xb_directory_permission_required-agent-repair) |
@@ -257,7 +259,7 @@ include a canonical `diagnostic` object.
 ## XB_MACHINE_BUSY
 
 - **Machine code:** `busy`
-- **Meaning:** The machine already has an active operation, a prepared upload reservation, or an in-progress command/disconnect, or it has not reported a current idle state (a preset write and its repeat need one, so a machine without water refuses them). Requests are never queued.
+- **Meaning:** The machine already has an active operation, a prepared upload reservation, motion outside an owned operation, or an in-progress command/disconnect. Requests are never queued.
 - **Location:** Command or method.
 - **Fix:** Inspect `machine_state` and let the active work finish, stop it, or cancel the prepared upload first.
 
@@ -265,7 +267,32 @@ include a canonical `diagnostic` object.
 
 1. Call read-only `machine_state` (`xbloom-studio machine state`) to inspect `operation`, `prepared`, and `gate`.
 2. Do not start another command or open a second connection. Report the active operation or prepared upload to the user and only stop/cancel if the user directs it.
-3. A refused preset write sent nothing and used no attempt. Once the machine is idle (for example refilled), and only for a write the user asked for, call `machine_disconnect`, then resubmit the identical `write_preset` without a separate `machine_connect`.
+
+## XB_MACHINE_WATER_INSUFFICIENT
+
+- **Machine code:** `busy`
+- **Meaning:** The machine reported insufficient water (state `0x0C` or a low-water report) for an action that needs it, such as a preset write or its repeat. Nothing was sent, and a refused preset write used no attempt.
+- **Location:** Command or method.
+- **Fix:** Refill the water tank, check `machine_state` until water is sufficient and the machine reports idle, then resubmit the identical request.
+
+### XB_MACHINE_WATER_INSUFFICIENT agent repair
+
+1. Ask the user to refill the water tank. Nothing was sent, so there is no owned work to stop.
+2. Call read-only `machine_state` (`xbloom-studio machine state`) until water is sufficient and the machine reports an idle state. A low-water report counts until a newer one says otherwise.
+3. If no new report arrives, call `machine_disconnect` (`xbloom-studio machine disconnect`); for a preset write the user asked for, resubmit the identical `write_preset` without a separate `machine_connect`, so it repeats only on a fresh idle report.
+
+## XB_MACHINE_NOT_IDLE
+
+- **Machine code:** `busy`
+- **Meaning:** The machine has not reported a current recognized idle state, so a command that needs one sent nothing. A repeated preset write needs an idle report under 5 s old from its own connection. No owned work is running.
+- **Location:** Command or method.
+- **Fix:** Inspect `machine_state` and the physical machine. If an awake machine sent no idle report after a reconnect, send `back_home` or `wake` with the user's permission, or disconnect and reconnect, then resubmit.
+
+### XB_MACHINE_NOT_IDLE agent repair
+
+1. Call read-only `machine_state` (`xbloom-studio machine state`) and check the physical machine, including its water and any open lid or error screen.
+2. Do not call `operation_stop` or cancel anything: no owned work is running.
+3. If the machine is awake but this connection never received an idle report, ask the user before sending `back_home` or `wake` (`xbloom-studio machine command wake --allow-control`), or call `machine_disconnect` (`xbloom-studio machine disconnect`) and resubmit, which reconnects and elicits a fresh report.
 
 ## XB_OWNER_LEASE_BUSY
 
@@ -333,13 +360,14 @@ include a canonical `diagnostic` object.
 - **Machine code:** `connection_unavailable`
 - **Meaning:** The local daemon RPC, SSH relay, or transport timed out or closed before returning a complete response. An accepted start may already be running.
 - **Location:** Command or method.
-- **Fix:** Inspect `operation_lookup` with the original idempotency key, `machine_state`, and history. Never automatically replay a start.
+- **Fix:** Inspect `operation_lookup` with the original idempotency key, `machine_state`, and history. Never automatically replay a start. For a `write_preset` or `write_presets` request, inspect `machine_preset_writes` instead.
 
 ### XB_TRANSPORT_UNCERTAIN agent repair
 
 1. Call read-only `operation_lookup(idempotency_key=...)` (`xbloom-studio operation lookup KEY`) with the exact original key, then `history_get` if an ID is returned, and `machine_state` for cached telemetry.
 2. Remember: an absent key does NOT guarantee the request is not still in flight, and submitting another start can run the machine.
-3. Report what is known and wait for fresh state and explicit user approval before retrying any physical action.
+3. For a timed-out `write_preset` or `write_presets`, which has no idempotency key, call read-only `machine_preset_writes` (`xbloom-studio machine preset-writes`) for the slot's write ID, outcome and attempts, plus `machine_state` and the physical machine. Never resend a preset write automatically.
+4. Report what is known and wait for fresh state and explicit user approval before retrying any physical action.
 
 ## XB_SESSION_UNAVAILABLE
 

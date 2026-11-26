@@ -64,6 +64,9 @@ from .diagnostic_catalog import (
     has_valid_diagnostic_types as has_valid_diagnostic_types,
 )
 from .diagnostic_catalog import (
+    preset_transport_fix as preset_transport_fix,
+)
+from .diagnostic_catalog import (
     validation_diagnostic as validation_diagnostic,
 )
 from .json_excerpt import (
@@ -309,7 +312,10 @@ def _local_fix_for_remote(
     *,
     error_type: str | None = None,
     message: str = "",
+    context: DiagnosticContext | None = None,
 ) -> str | None:
+    if diag_code == "XB_TRANSPORT_UNCERTAIN":
+        return preset_transport_fix(context)
     if (
         diag_code == "XB_RESPONSE_TOO_LARGE"
         and isinstance(details, Mapping)
@@ -505,7 +511,7 @@ def _rebuild_remote_diagnostic(
         diag_code,
         cause=message or None,
         fix=_local_fix_for_remote(
-            diag_code, details, error_type=error_type, message=message
+            diag_code, details, error_type=error_type, message=message, context=context
         ),
         location=location or None,
         context=ctx_payload or None,
@@ -809,9 +815,11 @@ def _infer_code(
             return "XB_DIRECTORY_PERMISSION_REQUIRED"
         return "XB_CONTROL_PERMISSION_REQUIRED"
     if error_code == "busy":
-        if error_type == "LeaseBusyError":
-            return "XB_OWNER_LEASE_BUSY"
-        return "XB_MACHINE_BUSY"
+        return {
+            "InsufficientWaterError": "XB_MACHINE_WATER_INSUFFICIENT",
+            "IdleStateRequiredError": "XB_MACHINE_NOT_IDLE",
+            "LeaseBusyError": "XB_OWNER_LEASE_BUSY",
+        }.get(error_type or "", "XB_MACHINE_BUSY")
     if error_code == "invalid_argument":
         if error_type == "SocketPathError":
             return "XB_SOCKET_PATH_TOO_LONG"

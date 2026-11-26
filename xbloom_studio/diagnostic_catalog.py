@@ -314,6 +314,38 @@ SPECS: tuple[DiagnosticSpec, ...] = (
         skill="skills/xbloom-studio-operate/SKILL.md#start-watch-stop",
     ),
     DiagnosticSpec(
+        code="XB_MACHINE_WATER_INSUFFICIENT",
+        error_code="busy",
+        title="Machine reports insufficient water",
+        default_cause=(
+            "The machine reported insufficient water for this action; nothing was sent."
+        ),
+        default_fix=(
+            "Refill the water tank, then check `machine_state` (`xbloom-studio "
+            "machine state`) until water is sufficient and the machine reports "
+            "idle, disconnecting and reconnecting if no new report arrives. "
+            "Then resubmit the identical request."
+        ),
+        skill="skills/xbloom-studio-operate/SKILL.md#settings-and-scale",
+    ),
+    DiagnosticSpec(
+        code="XB_MACHINE_NOT_IDLE",
+        error_code="busy",
+        title="Machine has not reported an idle state",
+        default_cause=(
+            "The machine has not reported a current recognized idle state; "
+            "nothing was sent."
+        ),
+        default_fix=(
+            "Check `machine_state` (`xbloom-studio machine state`) and the "
+            "physical machine, including its water. No owned work is running, "
+            "so do not stop anything. If an awake machine sent no idle report "
+            "after a reconnect, send `back_home` or `wake` with the user's "
+            "permission, or disconnect and reconnect, then resubmit."
+        ),
+        skill="skills/xbloom-studio-operate/SKILL.md#operate-the-machine",
+    ),
+    DiagnosticSpec(
         code="XB_OWNER_LEASE_BUSY",
         error_code="busy",
         title="Database or machine owner lease is held",
@@ -510,6 +542,23 @@ SPECS: tuple[DiagnosticSpec, ...] = (
 
 
 CATALOG: dict[str, DiagnosticSpec] = {spec.code: spec for spec in SPECS}
+
+PRESET_TRANSPORT_UNCERTAIN_FIX = (
+    "The preset write may have reached the machine. Inspect read-only "
+    "`machine_preset_writes` (`xbloom-studio machine preset-writes`) for the "
+    "slot's write ID and outcome, `machine_state`, and the physical machine. "
+    "Never resend a preset write automatically."
+)
+
+
+def preset_transport_fix(context: DiagnosticContext | None) -> str | None:
+    """Return the transport recovery for a preset-write request, else None."""
+    if context is not None and context.requested_command in (
+        "write_preset",
+        "write_presets",
+    ):
+        return PRESET_TRANSPORT_UNCERTAIN_FIX
+    return None
 
 
 FALLBACK_BY_ERROR_CODE: dict[str, str] = {

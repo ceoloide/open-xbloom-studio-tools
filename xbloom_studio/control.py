@@ -119,6 +119,14 @@ class BusyError(RuntimeError):
     pass
 
 
+class InsufficientWaterError(BusyError):
+    pass
+
+
+class IdleStateRequiredError(BusyError):
+    pass
+
+
 class UnsupportedStageError(NotImplementedError):
     pass
 
@@ -774,7 +782,7 @@ class Interaction(MachineControls, ReadOnlyClient):
             return  # Owned standalone scale can be exited by _prepare.
         states = IDLE_STATES + ((NO_WATER_STATE,) if allow_no_water else ())
         if observation is None or observation.value not in states:
-            raise BusyError(
+            raise IdleStateRequiredError(
                 "Machine has not reported a recognized idle/completed state"
             )
 
@@ -785,7 +793,9 @@ class Interaction(MachineControls, ReadOnlyClient):
         if (water is not None and water.value is False) or (
             state is not None and state.value == NO_WATER_STATE
         ):
-            raise BusyError("Machine reports insufficient water for a preset write")
+            raise InsufficientWaterError(
+                "Machine reports insufficient water for a preset write"
+            )
 
     def _require_quiescent(self, *, allow_prepared: bool = False) -> None:
         self._require_session()

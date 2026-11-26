@@ -17,7 +17,12 @@ from tests.frames import reply, u32
 from tests.machine import Machine, expect_shielded_failures, until
 from xbloom_studio.application import MachineService, RecordingConnector
 from xbloom_studio.client import SessionError
-from xbloom_studio.control import BusyError, Interaction
+from xbloom_studio.control import (
+    BusyError,
+    IdleStateRequiredError,
+    InsufficientWaterError,
+    Interaction,
+)
 from xbloom_studio.errors import error_detail
 from xbloom_studio.journal import Recorder
 from xbloom_studio.machine_api import same_attempt, same_request
@@ -1348,14 +1353,14 @@ class PresetRetryTests(ServiceCase):
         await self.service.connect(allow_untested=True)
         session = self.service.session
         self.machine.state(0x44)
-        with self.assertRaisesRegex(BusyError, "current idle"):
+        with self.assertRaisesRegex(IdleStateRequiredError, "current idle"):
             await self.write()
         self.machine.state(1)
         observed = session.state.observations["machine_state_code"]
         session.state.observations["machine_state_code"] = dataclasses.replace(
             observed, monotonic_at=observed.monotonic_at - 60
         )
-        with self.assertRaisesRegex(BusyError, "current idle"):
+        with self.assertRaisesRegex(IdleStateRequiredError, "current idle"):
             await self.write()
         self.assertEqual((self.frames(), self.latest()["attempts_used"]), (3, 1))
         self.assertTrue(self.latest()["retry_allowed"])
@@ -1382,6 +1387,17 @@ class PresetRetryTests(ServiceCase):
         self.assertEqual(result["attempt"]["outcome"], "saved")
         self.assertEqual(result["attempt"]["attempts_used"], 2)
 
+    async def test_a_repeat_during_motion_stays_busy(self):
+        self.machine.studio.reject_preset_attempts = 1
+        await self.write()
+        await self.service.disconnect()
+        await self.service.connect(allow_untested=True)
+        self.machine.state(0x22)
+        with self.assertRaises(BusyError) as caught:
+            await self.write()
+        self.assertIs(type(caught.exception), BusyError)
+        self.assertEqual((self.frames(), self.latest()["attempts_used"]), (3, 1))
+
     def connect_without_water(self):
         self.machine.overrides[8100] = lambda p: [
             *self.machine.studio(p),
@@ -1393,7 +1409,7 @@ class PresetRetryTests(ServiceCase):
         await self.write()
         await self.service.disconnect()
         self.connect_without_water()
-        with self.assertRaisesRegex(BusyError, "current idle"):
+        with self.assertRaises(InsufficientWaterError):
             await self.write()
         self.assertIsNone(self.service.session)
         self.assertEqual(self.machine.calls[-1], "disconnect")
@@ -1417,7 +1433,7 @@ class PresetRetryTests(ServiceCase):
             observed, monotonic_at=observed.monotonic_at - 60
         )
         self.machine.state(1)
-        with self.assertRaises(BusyError):
+        with self.assertRaises(InsufficientWaterError):
             await self.write()
         write = self.latest()
         self.assertEqual((self.frames(), len(write["attempts"])), (3, 1))
@@ -1429,10 +1445,10 @@ class PresetRetryTests(ServiceCase):
 
     async def test_a_write_without_water_sends_nothing_and_uses_no_attempt(self):
         self.connect_without_water()
-        with self.assertRaises(BusyError):
+        with self.assertRaises(InsufficientWaterError):
             await self.write()
         presets = [{**A, "slot": slot} for slot in "ABC"]
-        with self.assertRaises(BusyError):
+        with self.assertRaises(InsufficientWaterError):
             await self.service.command(
                 "write_presets",
                 {"presets": presets, "backup": presets},

@@ -11,6 +11,8 @@ from .connector import Connector, normalize_identity
 from .control import (
     BusyError,
     EncodedRecipe,
+    IdleStateRequiredError,
+    InsufficientWaterError,
     Interaction,
     Operation,
     UnsupportedStageError,
@@ -39,6 +41,8 @@ __all__ = [
     "Connector",
     "EncodedRecipe",
     "EncodedTeaRecipe",
+    "IdleStateRequiredError",
+    "InsufficientWaterError",
     "Interaction",
     "Operation",
     "PresetWriteError",

@@ -20,7 +20,11 @@ from tests.test_skills import command_problems
 from xbloom_studio import cli, diagnostics
 from xbloom_studio.client import ProtocolCommandError, SessionError
 from xbloom_studio.command_schema import CommandValidationError
-from xbloom_studio.control import BusyError
+from xbloom_studio.control import (
+    BusyError,
+    IdleStateRequiredError,
+    InsufficientWaterError,
+)
 from xbloom_studio.diagnostics import (
     CATALOG,
     DiagnosticContext,
@@ -321,6 +325,12 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
                 "XB_SOCKET_PATH_TOO_LONG",
             ),
             (BusyError("busy"), "busy", "XB_MACHINE_BUSY"),
+            (
+                InsufficientWaterError("low water"),
+                "busy",
+                "XB_MACHINE_WATER_INSUFFICIENT",
+            ),
+            (IdleStateRequiredError("no idle"), "busy", "XB_MACHINE_NOT_IDLE"),
             (ConflictError("changed"), "conflict", "XB_CONFLICT"),
             (
                 NotFoundError("Recipe not found", resource="recipe"),
@@ -393,6 +403,66 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
                     rendered = render_human_diagnostic(detail)
                     self.assertIn("Correlation ID:", rendered)
                     self.assertNotIn("secret", rendered)
+
+    def test_busy_subtypes_keep_their_code_and_fix_across_a_remote_hop(self):
+        cases = (
+            (InsufficientWaterError("low water"), "XB_MACHINE_WATER_INSUFFICIENT"),
+            (IdleStateRequiredError("no idle"), "XB_MACHINE_NOT_IDLE"),
+        )
+        for exc, code in cases:
+            with self.subTest(code=code):
+                local = error_detail(exc)
+                self.assertEqual(local["next_step"], CATALOG[code].default_fix)
+                self.assertEqual(local["diagnostic"]["cause"], str(exc))
+                bare = {key: local[key] for key in ("type", "code", "message")}
+                spoofed = {**local, "next_step": "Stop every operation."}
+                for detail in (bare, spoofed):
+                    remote = error_detail(RemoteError(detail))
+                    self.assertEqual(remote["code"], "busy")
+                    self.assertEqual(remote["diagnostic"]["code"], code)
+                    self.assertEqual(remote["diagnostic"]["fix"], local["next_step"])
+
+    def test_preset_write_timeouts_point_to_preset_write_records(self):
+        preset = {"slot": "A", "payload_hex": "6e6577", "flags": 4}
+        requests = {
+            "write_preset": {"preset": preset},
+            "write_presets": {"presets": [preset], "backup": [preset]},
+        }
+        for command, params in requests.items():
+            context = diagnostics.request_context(
+                "machine_command", {"command": command, "params": params}
+            )
+            for exc in (TimeoutError("timed out"), ConnectionError("closed")):
+                local = error_detail(exc, context=context)
+                remote = error_detail(
+                    RemoteError({**local, "next_step": "Resend the write."}),
+                    context=context,
+                )
+                for detail in (local, remote):
+                    with self.subTest(command=command, exc=type(exc).__name__):
+                        diag = detail["diagnostic"]
+                        self.assertEqual(diag["code"], "XB_TRANSPORT_UNCERTAIN")
+                        self.assertEqual(detail["next_step"], diag["fix"])
+                        self.assertIn("machine_preset_writes", diag["fix"])
+                        self.assertNotIn("operation_lookup", diag["fix"])
+
+    def test_other_timeouts_point_to_operation_lookup(self):
+        contexts = (
+            diagnostics.request_context(
+                "machine_command", {"command": "set_brightness", "params": {}}
+            ),
+            diagnostics.request_context("operation_start", {"request": {}}),
+        )
+        for context in contexts:
+            local = error_detail(TimeoutError("timed out"), context=context)
+            remote = error_detail(RemoteError(local), context=context)
+            for detail in (local, remote):
+                with self.subTest(method=context.method):
+                    self.assertIn("operation_lookup", detail["next_step"])
+                    self.assertIn("operation_lookup", detail["diagnostic"]["fix"])
+                    self.assertNotIn(
+                        "machine_preset_writes", detail["diagnostic"]["fix"]
+                    )
 
     def test_no_fabricated_location_without_context(self):
         detail = error_detail(NotFoundError("Recipe not found", resource="recipe"))
@@ -796,7 +866,7 @@ class AsyncSurfaceDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diag["location"]["operation_id"], "op-42")
         self.assertIn("Never start again", diag["fix"])
 
-    async def test_a_repeat_without_an_idle_report_stays_busy_remotely(self):
+    async def test_a_refused_repeat_names_its_reason_remotely(self):
         preset = {"slot": "C", "payload_hex": "6e6577", "flags": 4}
         self.machine.studio.reject_preset_attempts = 1
         first = await self.app.machine.command(
@@ -804,25 +874,34 @@ class AsyncSurfaceDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first["attempt"]["state"], "retryable")
         await self.app.machine.disconnect()
-        no_water = frames.reply(8023, frames.u32(0x0C))
-        self.machine.overrides[8100] = lambda p: [*self.machine.studio(p), no_water]
-        with self.assertRaises(RemoteError) as caught:
-            await call(
-                self.socket,
-                "machine_command",
-                {
-                    "command": "write_preset",
-                    "params": {"preset": preset},
-                    "allow_control": True,
-                    "allow_untested": True,
-                },
-            )
-        detail = caught.exception.detail
-        self.assertEqual(detail["code"], "busy")
-        self.assertEqual(detail["diagnostic"]["code"], "XB_MACHINE_BUSY")
-        self.assertIn("current idle report", detail["message"])
-        self.assertIn("current idle report", detail["diagnostic"]["cause"])
+        params = {
+            "command": "write_preset",
+            "params": {"preset": preset},
+            "allow_control": True,
+            "allow_untested": True,
+        }
+        context = diagnostics.request_context("machine_command", params)
+        for state, code in (
+            (0x0C, "XB_MACHINE_WATER_INSUFFICIENT"),
+            (0x44, "XB_MACHINE_NOT_IDLE"),
+        ):
+            with self.subTest(code=code):
+                report = frames.reply(8023, frames.u32(state))
+                self.machine.overrides[8100] = lambda p, r=report: [
+                    *self.machine.studio(p),
+                    r,
+                ]
+                with self.assertRaises(RemoteError) as caught:
+                    await call(self.socket, "machine_command", params)
+                for detail in (
+                    caught.exception.detail,
+                    error_detail(caught.exception, context=context),
+                ):
+                    self.assertEqual(detail["code"], "busy")
+                    self.assertEqual(detail["diagnostic"]["code"], code)
+                    self.assertEqual(detail["next_step"], CATALOG[code].default_fix)
         writes = await call(self.socket, "machine_preset_writes", {"slot": "C"})
+        self.assertEqual(writes["writes"][0]["attempts_used"], 1)
         self.assertTrue(writes["writes"][0]["retry_allowed"])
 
     async def test_failed_preset_write_carries_diagnostic_and_cli_human_display(self):

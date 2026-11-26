@@ -15,13 +15,14 @@ from urllib.error import HTTPError, URLError
 
 from .client import ProtocolCommandError, SessionError
 from .command_schema import CommandValidationError
-from .control import BusyError
+from .control import BusyError, IdleStateRequiredError, InsufficientWaterError
 from .diagnostics import (
     DiagnosticContext,
     InputFileReadError,
     LocalJsonSyntaxError,
     build_diagnostic,
     extract_json_excerpt,
+    preset_transport_fix,
     preset_write_diagnostic,
     sanitize_remote_error,
     validation_diagnostic,
@@ -377,6 +378,16 @@ def error_detail(
                 location=location,
             ),
         )
+    if isinstance(exc, (InsufficientWaterError, IdleStateRequiredError)):
+        message = str(exc)
+        diag = build_diagnostic(
+            "XB_MACHINE_WATER_INSUFFICIENT"
+            if isinstance(exc, InsufficientWaterError)
+            else "XB_MACHINE_NOT_IDLE",
+            cause=message,
+            location=location,
+        )
+        return _detail(name, "busy", message, diag["fix"], diagnostic=diag)
     if isinstance(exc, BusyError):
         message = str(exc)
         next_step = (
@@ -528,7 +539,8 @@ def error_detail(
         )
     if isinstance(exc, (TimeoutError, ConnectionError)):
         message = "The daemon or transport did not complete the request."
-        next_step = (
+        preset_fix = preset_transport_fix(context)
+        next_step = preset_fix or (
             "Check operation_lookup with the original idempotency key, "
             "machine_state and history. An accepted operation may continue. Do not "
             "automatically replay a start: an absent key can still start if the "
@@ -540,7 +552,10 @@ def error_detail(
             message,
             next_step,
             diagnostic=build_diagnostic(
-                "XB_TRANSPORT_UNCERTAIN", cause=message, location=location
+                "XB_TRANSPORT_UNCERTAIN",
+                cause=message,
+                fix=preset_fix,
+                location=location,
             ),
         )
     if isinstance(exc, json.JSONDecodeError):

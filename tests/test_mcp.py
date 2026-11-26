@@ -10,8 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.frames import reply, u32
 from tests.machine import Machine
 from xbloom_studio import mcp_server
+from xbloom_studio.diagnostics import CATALOG
 from xbloom_studio.facade import Application
 from xbloom_studio.mcp_contracts import compact_state
 from xbloom_studio.mcp_server import create_server
@@ -182,6 +184,79 @@ class ContractTests(ToolCase):
                 )
                 self.assertFalse(error, value)
                 self.assertEqual(value["acknowledged_mode"], mode)
+
+    async def test_machine_command_rejects_an_unknown_acknowledged_mode(self):
+        async def mode(value):
+            async def caller(method, params):
+                return {
+                    "command": 11511,
+                    "acknowledged": True,
+                    "acknowledged_mode": value,
+                }
+
+            return await create_server(caller=caller).call_tool(
+                "machine_command",
+                {
+                    "command": "set_mode",
+                    "params": {"mode": "pro"},
+                    "allow_control": True,
+                },
+            )
+
+        for value in ("pro", "recipes", None):
+            with self.subTest(value=value):
+                result = await mode(value)
+                self.assertFalse(result.is_error, result.structured_content)
+                self.assertEqual(result.structured_content["acknowledged_mode"], value)
+        with self.assertLogs("xbloom_studio.mcp_server", "ERROR"):
+            result = await mode("expert")
+        self.assertTrue(result.is_error)
+        self.assertEqual(
+            result.structured_content["error"]["code"], "output_contract_error"
+        )
+
+    async def machine_command_error(self, command, params, *reports):
+        def handshake(packet):
+            replies = self.machine.studio(packet)
+            kept = [r for r in replies if int.from_bytes(r[3:5], "little") != 8023]
+            return [*kept, *reports]
+
+        self.machine.overrides[8100] = handshake
+        error, value = await self.tool(
+            "machine_command",
+            {
+                "command": command,
+                "params": params,
+                "allow_control": True,
+                "allow_untested": True,
+            },
+        )
+        self.assertTrue(error, value)
+        self.assertEqual(self.machine.codes(), [8100])
+        self.assertEqual(value["error"]["code"], "busy")
+        return value["error"]["diagnostic"]
+
+    async def test_a_preset_write_without_water_reports_insufficient_water(self):
+        preset = {"slot": "A", "payload_hex": "6e", "flags": 4}
+        cases = {
+            "no-water state": (reply(8023, u32(0x0C)),),
+            "low-water report": (reply(8023, u32(1)), reply(40522, u32(0))),
+        }
+        for name, reports in cases.items():
+            with self.subTest(name):
+                await self.app.machine.disconnect()
+                self.machine.sent.clear()
+                diagnostic = await self.machine_command_error(
+                    "write_preset", {"preset": preset}, *reports
+                )
+                code = "XB_MACHINE_WATER_INSUFFICIENT"
+                self.assertEqual(diagnostic["code"], code)
+                self.assertEqual(diagnostic["fix"], CATALOG[code].default_fix)
+
+    async def test_a_command_without_an_idle_report_reports_not_idle(self):
+        diagnostic = await self.machine_command_error("set_brightness", {"level": 8})
+        self.assertEqual(diagnostic["code"], "XB_MACHINE_NOT_IDLE")
+        self.assertEqual(diagnostic["fix"], CATALOG["XB_MACHINE_NOT_IDLE"].default_fix)
 
     async def test_unknown_tools_and_domain_errors_are_structured(self):
         error, value = await self.tool("history_backup", {"destination": "/tmp/x"})
