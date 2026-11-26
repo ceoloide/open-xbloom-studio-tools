@@ -13,6 +13,7 @@ import math
 import os
 import struct
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -327,6 +328,7 @@ class MachineControls:
         untested: bool = False,
         idle: bool = True,
         ack_payload: bytes | None = None,
+        settle: bool = True,
     ) -> dict[str, Any]:
         if untested:
             self._require_untested(f"Command {code}")
@@ -348,7 +350,7 @@ class MachineControls:
                 packet = await self._command(
                     code, payload, function, ack_payload=ack_payload
                 )
-                if not finish:
+                if not finish and settle:
                     await asyncio.sleep(self.transition_delay)
                 return {
                     "command": code,
@@ -428,15 +430,23 @@ class MachineControls:
         return await self._setting(8022, prepare=False, finish=False, idle=False)
 
     async def wake(self) -> dict[str, Any]:
-        result = await self.back_home()
-        await asyncio.sleep(self.transition_delay)
-        asleep = self.snapshot()["fields"].get("asleep")
-        return {
-            **result,
-            "awake_observed": asleep is not None
-            and asleep["available"]
-            and asleep["value"] is False,
-        }
+        def awake() -> bool:
+            asleep = self.snapshot()["fields"].get("asleep")
+            return (
+                asleep is not None and asleep["available"] and asleep["value"] is False
+            )
+
+        result = await self._setting(
+            8022, prepare=False, finish=False, idle=False, settle=False
+        )
+        if not awake():
+            with suppress(SessionError, TimeoutError):
+                await self._wait_event(
+                    self._event_revision,
+                    lambda packet: packet.command == 8011,
+                    self.transition_delay,
+                )
+        return {**result, "awake_observed": awake()}
 
     async def set_mode(self, mode: str) -> dict[str, Any]:
         if mode not in ("pro", "recipes"):

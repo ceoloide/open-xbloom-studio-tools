@@ -210,6 +210,31 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue(state.snapshot()["fields"]["scale_weight"]["available"])
         self.assertFalse(state.snapshot(stale_after=0)["fields"]["asleep"]["stale"])
 
+    def test_identity_outlives_stale_after_but_identity_settings_expire(self):
+        identity = {"serial_number", "firmware", "model", "model_raw_hex"}
+        state = DeviceState(connected=True, session_ready=True)
+        apply(state, 40521, identity_block())
+        time.sleep(0.002)
+        fields = state.snapshot(stale_after=0)["fields"]
+        self.assertLessEqual(
+            {
+                "configured_mode",
+                "water_sufficient",
+                "grind_setting",
+                "water_source",
+                "pour_radius_baseline",
+                "vibration_baseline",
+                "device_info_raw",
+            },
+            set(fields) - identity,
+        )
+        self.assertEqual({k for k, v in fields.items() if not v["stale"]}, identity)
+        self.assertEqual({k for k, v in fields.items() if v["available"]}, identity)
+        self.assertGreaterEqual(fields["serial_number"]["age_seconds"], 0.002)
+        state.connected = False
+        fields = state.snapshot(stale_after=0)["fields"]
+        self.assertFalse(any(item["available"] for item in fields.values()))
+
     def test_events_are_bounded_and_detached(self):
         state = DeviceState()
         for index in range(200):
