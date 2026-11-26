@@ -738,6 +738,39 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SessionError, "Water sufficiency"):
                 await session.start_water(volume_ml=10)
 
+    async def test_running_fault_error_names_its_cause(self):
+        # Cleanup replies replace last_machine_event, so the error keeps it.
+        for event, cause in (
+            ((40522, u32(0)), "insufficient water (event 40522)"),
+            ((40522, u32(3)), "water fault (event 40522)"),
+            ((8204, b""), "abnormal_dose_or_water (event 8204)"),
+        ):
+            m = Machine()
+            async with interaction(m, allow_untested=True) as session:
+                op = await session.start_tea(EncodedTeaRecipe(b"tea"))
+                await transmitted(m, 4512)
+                m.emit(*event)
+                result = await asyncio.wait_for(op.wait(), 2)
+            with self.subTest(cause=cause):
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(f"Machine reported a fault: {cause}", result["error"])
+
+    async def test_fault_before_start_error_names_its_cause(self):
+        for event, cause in (
+            ((40522, u32(0)), "insufficient water (event 40522)"),
+            ((40521, identity_block(water=0)), "insufficient water (event 40521)"),
+            ((40517, b""), "idling_fault (event 40517)"),
+        ):
+            m = Machine()
+            gate = Gate(3500, action=lambda m=m, event=event: m.emit(*event))
+            gate.release.set()
+            async with interaction(m, command_hooks=gate) as session:
+                op = await session.start_grinder(size=5, rpm=80, duration_s=1)
+                result = await asyncio.wait_for(op.wait(), 2)
+            with self.subTest(cause=cause):
+                self.assertIn(f"fault before start: {cause}", result["error"])
+                self.assertNotIn(3500, m.codes())
+
     async def test_water_ok_report_during_a_pour_is_not_a_fault(self):
         m = Machine()
         async with interaction(m) as session:

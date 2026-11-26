@@ -21,7 +21,7 @@ from typing import Any, Literal
 from .client import ProtocolCommandError, ReadOnlyClient, SessionError
 from .command_schema import MAX_OPERATION_TIMEOUT, water_timeout
 from .connector import Connector
-from .events import decode_event, protocol_error
+from .events import SIGNALS, decode_event, protocol_error
 from .machine_controls import (
     MachineControls,
     UntestedOperationError,
@@ -1432,7 +1432,10 @@ class Interaction(MachineControls, ReadOnlyClient):
             faults += (LOW_WATER,)
         if self._last(faults) > op._since:
             self._uncertain = True
-            raise SessionError("Machine reported a fault before start; not sent")
+            cause = self._fault_cause(faults, op._since)
+            raise SessionError(
+                f"Machine reported a fault before start: {cause}; not sent"
+            )
         if self._last(MOTION_KEYS) > op._since:
             self._uncertain = True
             raise BusyError("Machine reported motion before start; not sent")
@@ -1443,7 +1446,8 @@ class Interaction(MachineControls, ReadOnlyClient):
                 op.protocol_error, op.protocol_error.get("pending_command")
             )
         if self._last(FAULT_KEYS) > op._since:
-            raise SessionError("Machine reported a fault; inspect last machine event")
+            cause = self._fault_cause(FAULT_KEYS, op._since)
+            raise SessionError(f"Machine reported a fault: {cause}")
         # Only the latest qualifying completion counts, and only while no
         # relevant motion is newer: superseded completion neither ends the
         # operation nor comes back with a later, unrelated stop or rest.
@@ -1610,6 +1614,32 @@ class Interaction(MachineControls, ReadOnlyClient):
 
     def _last(self, keys: tuple[SeenKey, ...]) -> int:
         return max(self._seen.get(key, 0) for key in keys)
+
+    def _fault_cause(self, keys: tuple[SeenKey, ...], since: int) -> str:
+        """Name the latest report of each of ``keys`` newer than ``since``.
+
+        Cleanup commands replace an operation's last_machine_event, so the
+        error itself carries the cause.
+        """
+        seen = self._seen.get
+        names = []
+        for key in keys:
+            revision = seen(key, 0)
+            if revision <= since:
+                continue
+            code = key[0]
+            if key == LOW_WATER:
+                # An identity block reports low water at its own revision.
+                code = 40521 if revision == seen((40521, None)) else 40522
+                names.append(f"insufficient water (event {code})")
+            elif code == 40522:
+                # Each report sets (40522, None) and its own tag together.
+                water_fault = revision == seen(WATER_FAULT)
+                kind = "water fault" if water_fault else "insufficient water"
+                names.append(f"{kind} (event 40522)")
+            else:
+                names.append(f"{SIGNALS[code]} (event {code})")
+        return ", ".join(dict.fromkeys(names))
 
     def _outstanding(self, since: int, idle: tuple[SeenKey, ...]) -> bool:
         """Motion of either actuator newer than ``since``, its own stop and
