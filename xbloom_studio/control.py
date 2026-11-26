@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import Any
+from typing import Any, Literal
 
 from .client import ProtocolCommandError, ReadOnlyClient, SessionError
 from .command_schema import MAX_OPERATION_TIMEOUT, water_timeout
@@ -48,14 +48,16 @@ MOTION_STATES = (0x22, 0x23)
 SCALE_STATES = (4, 5)
 CONTEXT_STATES = (1, 0x0A, 0x41, 0x24, 4, 5)
 FAULT_EVENTS = (40517, 40522, 8203, 8204)
-SeenKey = tuple[int, "int | None"]
+# Evidence derived from a code's report, never one of its decoded values.
+SeenTag = Literal["water_fault", "any_state", "at_rest"]
+SeenKey = tuple[int, "int | SeenTag | None"]
 FAULT_KEYS: tuple[SeenKey, ...] = tuple((code, None) for code in FAULT_EVENTS)
 LOW_WATER: SeenKey = (40522, 0)
-WATER_FAULT: SeenKey = (40522, -1)
+WATER_FAULT: SeenKey = (40522, "water_fault")
 # The latest decoded state code, whatever its value, and the latest one that
 # is not a motion state.
-STATE_REPORT: SeenKey = (8023, -1)
-STATE_AT_REST: SeenKey = (8023, -2)
+STATE_REPORT: SeenKey = (8023, "any_state")
+STATE_AT_REST: SeenKey = (8023, "at_rest")
 # A calibration report at the calibrated position.
 CALIBRATED: SeenKey = (40526, 85)
 # Faults that always require recovery, before any water or source check.
