@@ -14,9 +14,9 @@ import os
 import struct
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .client import SessionError
 from .command_schema import MAX_SAVE_TIMEOUT, recipe_configuration_untested
@@ -68,6 +68,59 @@ def preset_outcome(result: dict[str, Any], exc: BaseException | None) -> str:
     if not result["transmitted_write_count"] and not result["partial_frame"]:
         return "no_preset_frame"
     return "rejected" if result["rejection_evidence"] else "unconfirmed"
+
+
+def _is_save(packet: Packet) -> bool:
+    return packet.command == 8023 and packet.payload == PRESET_SAVED
+
+
+def _is_rejection(packet: Packet) -> bool:
+    return packet.command == 8023 and packet.payload == PRESET_REJECTED
+
+
+@dataclass
+class _PresetAttempt:
+    """One preset write attempt's live result and terminal evidence.
+
+    Terminal evidence is latched for the attempt's lifetime, from before its
+    first frame: no burst of other reports evicts it. ``start`` and ``cursor``
+    are the event revisions when the first and the latest frame could reach
+    the machine, not when their journal hooks began waiting.
+    """
+
+    result: dict[str, Any]
+    latched: list[tuple[int, Packet]] = field(default_factory=list)
+    start: int | None = None
+    cursor: int | None = None
+
+    def latch(self, revision: int, packet: Packet) -> None:
+        if _is_save(packet) or _is_rejection(packet):
+            self.latched.append((revision, packet))
+
+    def since(self, after: int, predicate: Callable[[Packet], bool]) -> Packet | None:
+        return next(
+            (
+                packet
+                for revision, packet in self.latched
+                if revision > after and predicate(packet)
+            ),
+            None,
+        )
+
+    def transmitted(self, revision: int) -> None:
+        self.cursor = revision
+        if self.start is None:
+            self.start = revision
+        self.result["transmitted_write_count"] += 1
+
+    def record_save(self, packet: Packet, after: int) -> None:
+        self.result["saved_observed"] = True
+        self.result["save_event"] = {
+            "command": packet.command,
+            "payload_hex": packet.payload.hex(),
+            "after_event_revision": after,
+            "correlation": "temporal_only",
+        }
 
 
 def _number(name: str, value: object, low: float, high: float) -> float:
@@ -486,11 +539,46 @@ class MachineControls:
             raise ValueError("Preset and backup must address the same slot")
         if (backup is None) != (backup_path is None):
             raise ValueError("A backup and its backup_path go together")
-        return await self._write_preset_selection(
-            (preset,) * 3,
+        planned = (preset,) * 3
+
+        async def send(attempt: _PresetAttempt) -> None:
+            def guard() -> None:
+                self._require_preset_frame()
+                if attempt.start is None:
+                    return
+                if attempt.since(attempt.start, _is_save) is not None:
+                    raise SessionError(
+                        "Preset completion arrived before the final planned "
+                        "write; no further writes sent"
+                    )
+                if attempt.since(attempt.start, _is_rejection) is not None:
+                    raise SessionError(
+                        "Machine reported a rejection state; no further writes sent"
+                    )
+
+            for index, frame in enumerate(planned):
+                guard()
+                await self._send_preset_frame(attempt, index, frame, guard)
+            cursor = attempt.cursor
+            assert cursor is not None  # Every planned frame was transmitted.
+            packet = await self._wait_event(
+                cursor,
+                lambda packet: _is_save(packet) or _is_rejection(packet),
+                save_timeout,
+                attempt.latched,
+            )
+            if not _is_save(packet):
+                raise SessionError("Machine reported a rejection state, not a save")
+            attempt.record_save(packet, cursor)
+
+        return await self._write_preset_attempt(
+            planned,
             None if backup is None else (backup,),
             backup_path,
             save_timeout,
+            send,
+            # The three frames are one write: a save after the first counts.
+            late_save_after="first_frame",
         )
 
     async def write_presets(
@@ -508,17 +596,46 @@ class MachineControls:
         On failure partial progress and the file remain; no same-session rollback.
         """
         self._require_untested("Batch preset writes")
-        return await self._write_preset_selection(
-            _batch(presets), _batch(backup), backup_path, save_timeout
+        planned = _batch(presets)
+
+        async def send(attempt: _PresetAttempt) -> None:
+            hook = self._before_slot_write
+            for index, preset in enumerate(planned):
+                self._require_preset_frame()
+                if hook is not None:
+                    await hook(preset.slot)
+                await self._send_preset_frame(
+                    attempt, index, preset, self._require_preset_frame
+                )
+            cursor = attempt.cursor
+            assert cursor is not None  # Every planned frame was transmitted.
+            packet = await self._wait_event(
+                cursor, _is_save, save_timeout, attempt.latched
+            )
+            attempt.record_save(packet, cursor)
+
+        return await self._write_preset_attempt(
+            planned,
+            _batch(backup),
+            backup_path,
+            save_timeout,
+            send,
+            # Each frame writes its own slot: only a save after the latest counts.
+            late_save_after="latest_frame",
         )
 
-    async def _write_preset_selection(
+    async def _write_preset_attempt(
         self,
-        presets: tuple[SavedPreset, ...],
+        planned: tuple[SavedPreset, ...],
         backup: tuple[SavedPreset, ...] | None,
         backup_path: str | os.PathLike[str] | None,
         save_timeout: float,
+        send: Callable[[_PresetAttempt], Awaitable[None]],
+        late_save_after: Literal["first_frame", "latest_frame"],
     ) -> dict[str, Any]:
+        """Admit, back up and classify one attempt; ``send`` writes its frames
+        and records the save. After a failure, a latched save still counts
+        once it follows ``late_save_after``."""
         _number("save_timeout", save_timeout, 0.001, MAX_SAVE_TIMEOUT)
         async with self._lifecycle:
             # V12.0D.500 refuses preset writes without water, unlike uploads.
@@ -539,150 +656,49 @@ class MachineControls:
                         "presets": [preset.to_dict() for preset in backup],
                     },
                 )
-            slots = list(dict.fromkeys(preset.slot for preset in presets))
-            single = len(slots) == 1
-            acknowledged: list[str] = []
-            evidence: list[dict[str, Any]] = []
             result: dict[str, Any] = {
                 "backup": saved,
-                "requested_slots": slots,
-                "planned_slot_writes": [preset.slot for preset in presets],
+                "requested_slots": list(dict.fromkeys(p.slot for p in planned)),
+                "planned_slot_writes": [preset.slot for preset in planned],
                 "transmitted_write_count": 0,
                 # A begun frame without its final chunk counts as an attempt.
                 "partial_frame": False,
                 "acknowledged_write_count": 0,
-                "acknowledged_slots": acknowledged,
+                "acknowledged_slots": [],
                 "saved_observed": False,
                 "save_event": None,
-                "rejection_evidence": evidence,
+                "rejection_evidence": [],
                 "outcome": None,
                 "readback_verified": False,
                 "restoration_attempted": False,
             }
+            attempt = _PresetAttempt(result)
             self._last_preset_write = result
             self._preset_write_used = True
-            start: int | None = None
-            cursor: int | None = None
-            hook = self._before_slot_write
-            announced: set[str] = set()
-
-            def is_save(packet: Packet) -> bool:
-                return packet.command == 8023 and packet.payload == PRESET_SAVED
-
-            def is_rejection(packet: Packet) -> bool:
-                return packet.command == 8023 and packet.payload == PRESET_REJECTED
-
-            # Terminal evidence is latched for the attempt's lifetime, from
-            # before its first frame: no burst of other reports evicts it.
-            latched: list[tuple[int, Packet]] = []
-
-            def latch(revision: int, packet: Packet) -> None:
-                if is_save(packet) or is_rejection(packet):
-                    latched.append((revision, packet))
-
-            def since(after: int, predicate: Callable[[Packet], bool]) -> Packet | None:
-                return next(
-                    (
-                        packet
-                        for revision, packet in latched
-                        if revision > after and predicate(packet)
-                    ),
-                    None,
-                )
-
-            def record_save(packet: Packet, after: int) -> None:
-                result["saved_observed"] = True
-                result["save_event"] = {
-                    "command": packet.command,
-                    "payload_hex": packet.payload.hex(),
-                    "after_event_revision": after,
-                    "correlation": "temporal_only",
-                }
-
-            def transmitted() -> None:
-                # Correlation starts when a frame can reach the machine, not
-                # when its journal hook began waiting.
-                nonlocal start, cursor
-                cursor = self._event_revision
-                if start is None:
-                    start = cursor
-                result["transmitted_write_count"] += 1
-
-            def guard_next_frame() -> None:
-                self._require_quiescent()
-                self._require_preset_water()
-                if not single or start is None:
-                    return
-                if since(start, is_save) is not None:
-                    raise SessionError(
-                        "Preset completion arrived before the final planned "
-                        "write; no further writes sent"
-                    )
-                if since(start, is_rejection) is not None:
-                    raise SessionError(
-                        "Machine reported a rejection state; no further writes sent"
-                    )
-
-            self._event_latch = latch
+            self._event_latch = attempt.latch
             # A cancellation stays a cancellation even if the frame's write
             # then fails; it ends automatic repetition.
             self._keep_cancellation = True
             try:
                 await self._prepare()
-                for index, preset in enumerate(presets):
-                    guard_next_frame()
-                    if hook is not None and preset.slot not in announced:
-                        announced.add(preset.slot)
-                        await hook(preset.slot)
-                    packet = await self._command(
-                        11510,
-                        preset.body(),
-                        2,
-                        before_write=guard_next_frame,
-                        on_transmit=transmitted,
-                    )
-                    if packet.payload:
-                        evidence.append(
-                            {
-                                "command": 11510,
-                                "payload_hex": packet.payload.hex(),
-                                "write_index": index,
-                                "correlation": "response_to_this_write",
-                            }
-                        )
-                        raise SessionError(
-                            "Preset write response was not an empty "
-                            "acknowledgment; no further writes sent"
-                        )
-                    if preset.slot not in acknowledged:
-                        acknowledged.append(preset.slot)
-                    result["acknowledged_write_count"] += 1
-                    await asyncio.sleep(0.1 if self.transition_delay else 0)
-                assert cursor is not None  # Every planned frame was transmitted.
-                packet = await self._wait_event(
-                    cursor,
-                    lambda packet: is_save(packet) or (single and is_rejection(packet)),
-                    save_timeout,
-                    latched,
-                )
-                if not is_save(packet):
-                    raise SessionError("Machine reported a rejection state, not a save")
-                record_save(packet, cursor)
+                await send(attempt)
                 await self._command(8022)
                 await asyncio.sleep(self.transition_delay)
                 result["outcome"] = preset_outcome(result, None)
-                return {**result, "acknowledged_slots": acknowledged.copy()}
+                return {
+                    **result,
+                    "acknowledged_slots": result["acknowledged_slots"].copy(),
+                }
             except BaseException as exc:
-                # Any save after a single-slot attempt's first transmission
-                # wins; a batch correlates only with its last frame.
+                start, cursor = attempt.start, attempt.cursor
                 if start is not None and cursor is not None:
-                    after = start if single else cursor
-                    late = since(after, is_save)
+                    after = start if late_save_after == "first_frame" else cursor
+                    late = attempt.since(after, _is_save)
                     if late is not None:
-                        record_save(late, after)
-                    state = since(start, is_rejection)
+                        attempt.record_save(late, after)
+                    state = attempt.since(start, _is_rejection)
                     if state is not None:
-                        evidence.append(
+                        result["rejection_evidence"].append(
                             {
                                 "command": state.command,
                                 "payload_hex": state.payload.hex(),
@@ -704,6 +720,44 @@ class MachineControls:
             finally:
                 self._event_latch = None
                 self._keep_cancellation = False
+
+    async def _send_preset_frame(
+        self,
+        attempt: _PresetAttempt,
+        index: int,
+        preset: SavedPreset,
+        guard: Callable[[], None],
+    ) -> None:
+        """One planned frame; any non-empty response stops the attempt."""
+        result = attempt.result
+        packet = await self._command(
+            11510,
+            preset.body(),
+            2,
+            before_write=guard,
+            on_transmit=lambda: attempt.transmitted(self._event_revision),
+        )
+        if packet.payload:
+            result["rejection_evidence"].append(
+                {
+                    "command": 11510,
+                    "payload_hex": packet.payload.hex(),
+                    "write_index": index,
+                    "correlation": "response_to_this_write",
+                }
+            )
+            raise SessionError(
+                "Preset write response was not an empty "
+                "acknowledgment; no further writes sent"
+            )
+        if preset.slot not in result["acknowledged_slots"]:
+            result["acknowledged_slots"].append(preset.slot)
+        result["acknowledged_write_count"] += 1
+        await asyncio.sleep(0.1 if self.transition_delay else 0)
+
+    def _require_preset_frame(self) -> None:
+        self._require_quiescent()
+        self._require_preset_water()
 
     async def start_grinder_calibration(self, *, timeout: float = 180) -> Operation:
         async with self._lifecycle:
