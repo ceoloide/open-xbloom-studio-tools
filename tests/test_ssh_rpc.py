@@ -82,6 +82,8 @@ elif mode == "stdout":
 elif mode == "hang":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(10)
+elif mode == "sleep_until_sigterm":
+    time.sleep(10)
 elif mode == "descendant":
     orphaned = str(audit.parent / "orphaned")
     subprocess.Popen(
@@ -180,7 +182,7 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
         for host in ("-oProxyCommand=x", "a b", "a;touch", "a\n", "", None, "x" * 256):
             with self.subTest(host=host), self.assertRaises(ValueError):
                 await ssh_call(host, "service_info")
-        for timeout in (0, -1, float("inf"), float("nan"), True, None):
+        for timeout in (0, -1, float("inf"), float("nan"), True):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 await ssh_call("host", "service_info", timeout=timeout)
         with self.assertRaises(ValueError):
@@ -229,6 +231,21 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await exited(pid))
         # It died with the group, not because its parent died first.
         self.assertFalse((self.root / "orphaned").exists())
+
+    async def test_a_preset_write_outlasts_the_default_timeout(self):
+        self.mode("sleep_until_sigterm")
+        loop = asyncio.get_running_loop()
+        params = {"command": "write_preset", "params": {"save_timeout": 45}}
+        pending = asyncio.create_task(ssh_call("host", "machine_command", params))
+        while not self.audit.exists():
+            self.assertFalse(pending.done())
+            await asyncio.sleep(0.01)
+        with patch.object(loop, "time", lambda now=loop.time: now() + 70):
+            await asyncio.wait({pending}, timeout=0.5)
+            self.assertFalse(pending.done())
+        with patch.object(loop, "time", lambda now=loop.time: now() + 80):
+            with self.assertRaisesRegex(ConnectionError, "timed out"):
+                await pending
 
     async def hang_until_interrupted(self):
         """The interrupt test's target; its fixtures end on their own after 120 s."""

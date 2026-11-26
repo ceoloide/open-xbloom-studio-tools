@@ -75,6 +75,29 @@ class WireTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 rpc_wire.response(value)
 
+    def test_a_preset_write_budget_adds_its_save_wait(self):
+        def preset(save, command="write_preset"):
+            return {"command": command, "params": {"save_timeout": save}}
+
+        for params, budget in (
+            (preset(45), 75),
+            (preset(45, "write_presets"), 75),
+            (preset(1e9), 90),
+            (preset(0), 30),
+            (preset(-1), 30),
+            (preset(float("inf")), 30),
+            (preset(float("nan")), 30),
+            (preset(True), 30),
+            (preset("45"), 30),
+            ({"command": "write_preset", "params": None}, 30),
+            ({"command": "set_brightness", "params": {"save_timeout": 45}}, 30),
+            (None, 30),
+        ):
+            with self.subTest(params=params):
+                timeout = rpc_wire.default_timeout("machine_command", params)
+                self.assertEqual(timeout, budget)
+        self.assertEqual(rpc_wire.default_timeout("service_info", preset(45)), 30)
+
 
 class ErrorContractTests(unittest.TestCase):
     def code(self, exc):
@@ -531,6 +554,35 @@ class LocalServerTests(ServerCase):
             self.assertIn("original idempotency key", detail["next_step"])
             self.assertTrue(received.is_set())
             await asyncio.wait_for(closed.wait(), timeout=1)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_a_preset_write_outlasts_the_default_client_timeout(self):
+        self.path.parent.mkdir(mode=0o700)
+        received = asyncio.Event()
+
+        async def withhold(reader, writer):
+            try:
+                await reader.readline()
+                received.set()
+                await reader.read()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(withhold, str(self.path))
+        loop = asyncio.get_running_loop()
+        params = {"command": "write_preset", "params": {"save_timeout": 45}}
+        try:
+            pending = asyncio.create_task(call(self.path, "machine_command", params))
+            await asyncio.wait_for(received.wait(), 1)
+            with patch.object(loop, "time", lambda now=loop.time: now() + 70):
+                await asyncio.wait({pending}, timeout=0.5)
+                self.assertFalse(pending.done())
+            with patch.object(loop, "time", lambda now=loop.time: now() + 80):
+                with self.assertRaisesRegex(ConnectionError, "timed out"):
+                    await pending
         finally:
             server.close()
             await server.wait_closed()
