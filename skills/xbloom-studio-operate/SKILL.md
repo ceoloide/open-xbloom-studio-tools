@@ -131,7 +131,9 @@ optional for `write_preset` and required for `write_presets`; use only
 contents the user supplies, never ones built from local aliases. Nothing
 reads a preset back: even a success reports `readback_verified=false`. A
 preset write switches the machine to pro mode while preparing and leaves it
-there; `set_mode` with `recipes` switches back if the user wants.
+there; `set_mode` with `recipes` switches back if the user wants. Both report
+the switch the machine acknowledged as `acknowledged_mode`, a failed write's
+`details` included; it is not a telemetry readback.
 
 One `write_preset` call is one attempt of three planned frames. Its result's
 `attempt` field gives the `outcome` (`saved`, `saved_cleanup_failed`,

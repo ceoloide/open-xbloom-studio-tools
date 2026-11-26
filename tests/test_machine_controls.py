@@ -19,12 +19,18 @@ from xbloom_studio import (
     UnsupportedStageError,
     UntestedOperationError,
 )
+from xbloom_studio.simulator import device_info
 
 HOME, MODE = 8022, 11511
+RECIPES = bytes.fromhex("91327856")
 PREPARE = [HOME, MODE]
 NO_WATER = 0x0C
 # V12.0D.500's refusal of 11510 in the no-water state.
 NO_WATER_REFUSAL = bytes.fromhex("0000000000000000000000000040000c")
+
+
+def configured_mode(session):
+    return session.get_state()["machine"]["fields"]["configured_mode"]["value"]
 
 
 class Base(unittest.IsolatedAsyncioTestCase):
@@ -99,6 +105,18 @@ class SettingTests(Base):
         m = Machine()
         async with interaction(m) as session:
             self.assertFalse((await session.wake())["awake_observed"])
+
+    async def test_mode_ack_is_reported_without_changing_telemetry(self):
+        m = Machine()
+        m.studio.info = device_info(mode=RECIPES)
+        async with interaction(m) as session:
+            self.assertIsNone(session.get_state()["last_acknowledged_mode"])
+            for mode in ("pro", "recipes"):
+                result = await session.set_mode(mode)
+                self.assertEqual(result["acknowledged_mode"], mode)
+                self.assertFalse(result["readback_verified"])
+                self.assertEqual(session.get_state()["last_acknowledged_mode"], mode)
+                self.assertEqual(configured_mode(session), "recipes")
 
     async def test_setting_after_owned_scale_exits_scale_first(self):
         m = Machine()
@@ -552,6 +570,29 @@ class PresetTests(Base):
         self.assertEqual(m.payloads(11510), [b"\x01\x02new"] * 3)
         self.assertFalse(self.path("second.json").exists())
 
+    async def test_preset_writes_report_the_pro_mode_they_select(self):
+        writes = {
+            "single": lambda session: session.write_preset(SavedPreset("A", b"n", 4)),
+            "batch": lambda session: session.write_presets(
+                [SavedPreset(slot, b"n", 4) for slot in "ABC"],
+                backup=[SavedPreset(slot, b"o", 4) for slot in "ABC"],
+                backup_path=self.path(),
+            ),
+        }
+        for name, write in writes.items():
+            with self.subTest(name):
+                m = Machine()
+                m.studio.info = device_info(mode=RECIPES)
+                async with interaction(m, allow_untested=True) as session:
+                    result = await write(session)
+                    self.assertEqual(
+                        session.get_state()["last_acknowledged_mode"], "pro"
+                    )
+                    self.assertEqual(configured_mode(session), "recipes")
+                self.assertTrue(result["saved_observed"])
+                self.assertEqual(result["acknowledged_mode"], "pro")
+                self.assertFalse(result["readback_verified"])
+
     async def test_early_completion_stops_further_single_slot_writes(self):
         m = Machine()
         m.overrides[11510] = lambda p: [reply(11510, b"", 0xC2), reply(8023, u32(0x25))]
@@ -743,6 +784,47 @@ class PresetAttemptTests(Base):
             [(11510, NO_WATER_REFUSAL.hex())],
         )
         self.assertEqual(m.codes().count(11510), 1)
+
+    async def test_a_rejected_attempt_reports_its_mode_ack(self):
+        m = Machine()
+        m.studio.reject_preset_attempts = 1
+        result = await self.attempt(m)
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["acknowledged_mode"], "pro")
+
+    async def test_an_unacknowledged_mode_change_reports_no_mode(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            await session.set_mode("pro")
+            m.studio.silent.add(MODE)
+            with self.assertRaises(PresetWriteError) as caught:
+                await session.write_preset(SavedPreset("A", b"new", 4))
+        self.assertIsNone(caught.exception.result["acknowledged_mode"])
+        self.assertNotIn(11510, m.codes())
+
+    async def test_a_cancellation_after_the_mode_ack_reports_it(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True, transition_delay=0.2) as session:
+            task = asyncio.create_task(session.write_preset(SavedPreset("A", b"n", 4)))
+            await until(lambda: session.get_state()["last_acknowledged_mode"] == "pro")
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            attempt = session.get_state()["last_preset_write"]
+        self.assertEqual(attempt["acknowledged_mode"], "pro")
+        self.assertNotIn(11510, m.codes())
+
+    async def test_link_loss_after_the_mode_ack_keeps_it_in_the_attempt(self):
+        m = Machine()
+        m.studio.silent.add(11510)
+        async with interaction(m, allow_untested=True, ack_timeout=1) as session:
+            task = asyncio.create_task(session.write_preset(SavedPreset("A", b"n", 4)))
+            await transmitted(m, 11510)
+            m.drop()
+            with self.assertRaises(PresetWriteError) as caught:
+                await task
+            self.assertIsNone(session.get_state()["last_acknowledged_mode"])
+        self.assertEqual(caught.exception.result["acknowledged_mode"], "pro")
 
     async def test_an_empty_refusal_report_is_no_acknowledgment(self):
         m = Machine()
