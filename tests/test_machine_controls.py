@@ -13,6 +13,8 @@ from tests.machine import Machine, interaction, transmitted, until
 from xbloom_studio import (
     BusyError,
     EncodedTeaRecipe,
+    IdleStateRequiredError,
+    InsufficientWaterError,
     PresetWriteError,
     SavedPreset,
     SessionError,
@@ -716,9 +718,9 @@ class PresetTests(Base):
         m = Machine()
         async with interaction(m, allow_untested=True) as session:
             m.state(NO_WATER)
-            with self.assertRaises(BusyError):
+            with self.assertRaises(InsufficientWaterError):
                 await session.write_preset(SavedPreset("A", b"new", 4))
-            with self.assertRaises(BusyError):
+            with self.assertRaises(InsufficientWaterError):
                 await session.write_presets(
                     [SavedPreset(s, b"x", 0) for s in "ABC"],
                     backup=[SavedPreset(s, b"y", 0) for s in "ABC"],
@@ -735,12 +737,32 @@ class PresetTests(Base):
         async with interaction(m, allow_untested=True) as session:
             m.emit(40522, u32(0))
             m.state(1)
-            with self.assertRaises(BusyError):
+            with self.assertRaises(InsufficientWaterError):
                 await session.write_preset(SavedPreset("A", b"new", 4))
             self.assertEqual(m.codes(), [8100])
             m.emit(40522, u32(1))
             result = await session.write_preset(SavedPreset("A", b"new", 4))
             self.assertTrue(result["saved_observed"])
+
+    async def test_motion_outranks_low_water_on_a_preset_write(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            m.emit(40522, u32(0))
+            m.state(0x22)
+            with self.assertRaises(BusyError) as caught:
+                await session.write_preset(SavedPreset("A", b"new", 4))
+        self.assertIs(type(caught.exception), BusyError)
+        self.assertEqual(m.codes(), [8100])
+
+    async def test_a_setting_without_an_idle_report_sends_nothing(self):
+        m = Machine()
+        m.overrides[8100] = lambda p: [
+            f for f in m.studio(p) if int.from_bytes(f[3:5], "little") != 8023
+        ]
+        async with interaction(m) as session:
+            with self.assertRaises(IdleStateRequiredError):
+                await session.set_brightness(8)
+        self.assertEqual(m.codes(), [8100])
 
 
 class PresetAttemptTests(Base):
@@ -935,6 +957,24 @@ class PresetAttemptTests(Base):
                 self.assertEqual(result["transmitted_write_count"], 1)
                 self.assertFalse(result["partial_frame"])
                 self.assertEqual(result["outcome"], outcome)
+
+    async def test_a_save_before_a_later_frame_transmits_still_counts(self):
+        m = Machine(write_size=20)
+        starts = []
+
+        async def write(data):
+            if data[:1] == b"\x58" and int.from_bytes(data[3:5], "little") == 11510:
+                starts.append(data)
+                if len(starts) == 2:
+                    # After the second frame's guard, before its final chunk.
+                    m.state(0x25)
+            await Machine.write(m, data)
+
+        m.write = write
+        result = await self.attempt(m, SavedPreset("A", bytes(40), 0))
+        self.assertEqual(result["transmitted_write_count"], 2)
+        self.assertTrue(result["saved_observed"])
+        self.assertEqual(result["outcome"], "saved_cleanup_failed")
 
     async def test_a_save_before_the_first_frame_is_not_correlated(self):
         m = Machine()

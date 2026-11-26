@@ -24,7 +24,13 @@ from .command_schema import (
     recipe_configuration_untested,
     validate_command_params,
 )
-from .control import IDLE_STATES, BusyError, EncodedRecipe, Interaction
+from .control import (
+    IDLE_STATES,
+    BusyError,
+    EncodedRecipe,
+    IdleStateRequiredError,
+    Interaction,
+)
 from .machine_controls import (
     SLOTS,
     ControlPermissionError,
@@ -518,15 +524,16 @@ class MachineCommandAPI:
                 "Nothing was sent."
             )
         if repeat:
+            session._require_quiescent()
+            session._require_preset_water()
             state = session.snapshot()["fields"].get("machine_state_code") or {}
             if not state.get("available") or state.get("value") not in IDLE_STATES:
-                raise BusyError(
+                raise IdleStateRequiredError(
                     "Repeating a preset write needs a current idle report from "
                     "this connection; nothing was sent. Check the machine (for "
                     "example its water), disconnect if still connected and "
                     "resubmit without a separate connect."
                 )
-            session._require_preset_water()
         attempt = {
             "write_id": write_id or uuid.uuid4().hex,
             "attempt_id": uuid.uuid4().hex,

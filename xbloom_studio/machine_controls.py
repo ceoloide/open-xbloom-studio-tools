@@ -645,8 +645,9 @@ class MachineControls:
         _number("save_timeout", save_timeout, 0.001, MAX_SAVE_TIMEOUT)
         async with self._lifecycle:
             # V12.0D.500 refuses preset writes without water, unlike uploads.
-            self._require_idle()
+            self._require_quiescent()
             self._require_preset_water()
+            self._require_idle()
             if self._preset_write_used:
                 raise SessionError(
                     "Each preset write requires a fresh interaction; "
