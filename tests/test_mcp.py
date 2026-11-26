@@ -160,6 +160,29 @@ class ContractTests(ToolCase):
             value["error"]["details"]["preset_write"]["write_id"], write["write_id"]
         )
 
+    async def test_machine_command_reports_the_acknowledged_mode(self):
+        cases = (
+            ("set_mode", {"mode": "recipes"}, "recipes"),
+            (
+                "write_preset",
+                {"preset": {"slot": "A", "payload_hex": "6e", "flags": 4}},
+                "pro",
+            ),
+        )
+        for command, params, mode in cases:
+            with self.subTest(command):
+                error, value = await self.tool(
+                    "machine_command",
+                    {
+                        "command": command,
+                        "params": params,
+                        "allow_control": True,
+                        "allow_untested": True,
+                    },
+                )
+                self.assertFalse(error, value)
+                self.assertEqual(value["acknowledged_mode"], mode)
+
     async def test_unknown_tools_and_domain_errors_are_structured(self):
         error, value = await self.tool("history_backup", {"destination": "/tmp/x"})
         self.assertEqual((error, value["error"]["code"]), (True, "unknown_tool"))

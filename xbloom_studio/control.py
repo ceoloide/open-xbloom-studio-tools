@@ -414,6 +414,10 @@ class Interaction(MachineControls, ReadOnlyClient):
         self._preset_write_used = False
         self._last_preset_write: dict[str, Any] | None = None
         self._selected_water_source: int | None = None
+        # The mode the latest 11511 ACK selected on this link, kept apart from
+        # telemetry; ``_mode_acks`` counts those ACKs and never resets.
+        self._selected_mode: str | None = None
+        self._mode_acks = 0
         # Latest decoded source from an identity block or units/source event.
         self._reported_source: int | None = None
         # Water sufficiency decoded from the latest identity block only; a
@@ -493,6 +497,7 @@ class Interaction(MachineControls, ReadOnlyClient):
     def _disconnected(self) -> None:
         self._invalidate_preparation("connection_lost")
         self._reported_source = self._identity_water = None
+        self._selected_mode = None
         super()._disconnected()
         if self._waiter is not None:
             _, future, _ = self._waiter
@@ -688,6 +693,7 @@ class Interaction(MachineControls, ReadOnlyClient):
             "recovery_required": self._uncertain,
             "last_preset_write": self._last_preset_write,
             "last_acknowledged_water_source": self._selected_water_source,
+            "last_acknowledged_mode": self._selected_mode,
             "prepared": dict(self._prepared) if self._prepared else None,
             "last_preparation": dict(self._last_preparation)
             if self._last_preparation
@@ -1042,7 +1048,12 @@ class Interaction(MachineControls, ReadOnlyClient):
         await self._command(8022)
         await asyncio.sleep(self.transition_delay)
         await self._command(11511, b"\0" * 4, 2)
+        self._record_mode_ack("pro")
         await asyncio.sleep(self.transition_delay)
+
+    def _record_mode_ack(self, mode: str) -> None:
+        self._selected_mode = mode
+        self._mode_acks += 1
 
     def _water_source(self) -> int:
         info = self.state.observations.get("device_info_raw")

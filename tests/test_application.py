@@ -1202,6 +1202,12 @@ class PresetRetryTests(ServiceCase):
     def journal(self, kind, **data):
         self.store.append(kind, data, device=self.service.device)
 
+    async def test_a_rejected_write_reports_its_mode_ack(self):
+        self.machine.studio.reject_preset_attempts = 1
+        result = await self.write()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["details"]["acknowledged_mode"], "pro")
+
     async def test_rejected_write_repeats_identically_in_a_fresh_session(self):
         self.machine.studio.reject_preset_attempts = 1
         first = await self.write()
