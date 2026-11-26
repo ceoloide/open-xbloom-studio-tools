@@ -21,7 +21,7 @@ MINIMUM_PERCENT = 90.0
 FILE_MINIMUM = {"line": 60.0, "branch": 50.0}
 FILE_STATEMENTS = 20
 LARGEST = 5
-REQUIRED_ROOTS = {"scripts", "xbloom_studio"}
+ROOT_MINIMUM = {"scripts": 100.0, "xbloom_studio": MINIMUM_PERCENT}
 COUNTS = ("covered_lines", "num_statements", "covered_branches", "num_branches")
 UNCOVERED = {
     "line": ("lines", "num_statements", "covered_lines"),
@@ -73,15 +73,18 @@ def largest_gaps(
 
 def failures(
     groups: Mapping[str, Mapping[str, int]],
-    minimum: float,
+    minimum: float | None,
     files: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[str]:
     result = []
     for group, totals in sorted(groups.items()):
+        threshold = (
+            ROOT_MINIMUM.get(group, MINIMUM_PERCENT) if minimum is None else minimum
+        )
         for kind, value in percentages(totals).items():
-            if value < minimum:
+            if value < threshold:
                 result.append(
-                    f"{group}: {kind} coverage {value:.2f}% is below {minimum:.2f}%"
+                    f"{group}: {kind} coverage {value:.2f}% is below {threshold:.2f}%"
                 )
                 result += largest_gaps(files or {}, group, kind)
     return result
@@ -135,13 +138,15 @@ def file_failures(files: Mapping[str, Mapping[str, Any]]) -> list[str]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
-    parser.add_argument("--minimum", type=float, default=MINIMUM_PERCENT)
+    parser.add_argument(
+        "--minimum", type=float, help="override the minimum for every root"
+    )
     args = parser.parse_args(argv)
     files = json.loads(args.report.read_text("utf-8"))["files"]
     groups = group_totals(files)
     problems = [
         f"missing coverage data for {root}"
-        for root in sorted(REQUIRED_ROOTS - groups.keys())
+        for root in sorted(ROOT_MINIMUM.keys() - groups.keys())
     ]
     problems += failures(groups, args.minimum, files)
     problems += file_failures(files)

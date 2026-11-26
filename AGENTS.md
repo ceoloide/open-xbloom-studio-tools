@@ -89,7 +89,7 @@ SIGKILL, SIGHUP or SIGQUIT leaves its workers and run root (`xbs-r-*` under
   (`scripts.run_tests`).
 - Style and types: `ruff format`, `ruff check` and strict mypy over the package
   and `scripts` (the `format`, `lint` and `types` steps; see `pyproject.toml`).
-- Coverage: 90 % line and branch per root (`xbloom_studio`, `scripts`), and
+- Coverage: 100 % line and branch for `scripts`, 90 % for `xbloom_studio`, and
   60 % line, 50 % branch per file of 20+ statements (`scripts.check_coverage`).
 - Agent skills and README examples match the shipped CLI and MCP tools
   (`tests.test_skills`); the built sdist and wheel have exactly the expected
@@ -104,8 +104,7 @@ SIGKILL, SIGHUP or SIGQUIT leaves its workers and run root (`xbs-r-*` under
 - New tests are small, test one behaviour and are named for it, like
   `test_interrupt_exits_130`. No class names from review rounds, such as
   `ReviewRegressionTests`.
-- Keep `scripts` at 100 % line and branch coverage, and do not lower the
-  package's.
+- Do not lower the package's coverage.
 - Change the MCP golden only on purpose, and explain its diff in the PR body.
 
 ## Environment
