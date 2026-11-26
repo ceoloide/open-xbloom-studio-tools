@@ -311,6 +311,8 @@ class MachineControls:
         _preset_write_used: bool
         _last_preset_write: dict[str, Any] | None
         _selected_water_source: int | None
+        _selected_mode: str | None
+        _mode_acks: int
         _received_events: deque[tuple[int, Packet]]
 
         async def _command(
@@ -333,6 +335,8 @@ class MachineControls:
         def _require_preset_water(self) -> None: ...
 
         async def _prepare(self) -> None: ...
+
+        def _record_mode_ack(self, mode: str) -> None: ...
 
         def _water_source(self) -> int: ...
 
@@ -504,7 +508,7 @@ class MachineControls:
     async def set_mode(self, mode: str) -> dict[str, Any]:
         if mode not in ("pro", "recipes"):
             raise ValueError("mode must be pro or recipes")
-        return await self._setting(
+        result = await self._setting(
             11511,
             PRO_MODE if mode == "pro" else RECIPES_MODE,
             function=2,
@@ -512,6 +516,8 @@ class MachineControls:
             finish=False,
             before=((8022, b""),),
         )
+        self._record_mode_ack(mode)
+        return {**result, "acknowledged_mode": mode}
 
     async def write_preset(
         self,
@@ -671,6 +677,7 @@ class MachineControls:
                 "outcome": None,
                 "readback_verified": False,
                 "restoration_attempted": False,
+                "acknowledged_mode": None,
             }
             attempt = _PresetAttempt(result)
             self._last_preset_write = result
@@ -679,8 +686,15 @@ class MachineControls:
             # A cancellation stays a cancellation even if the frame's write
             # then fails; it ends automatic repetition.
             self._keep_cancellation = True
+            mode_acks = self._mode_acks
             try:
-                await self._prepare()
+                try:
+                    await self._prepare()
+                finally:
+                    # Only this attempt's 11511 ACK counts, even if _prepare
+                    # then failed; a later link loss never erases it.
+                    if self._mode_acks > mode_acks:
+                        result["acknowledged_mode"] = "pro"
                 await send(attempt)
                 await self._command(8022)
                 await asyncio.sleep(self.transition_delay)

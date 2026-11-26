@@ -704,6 +704,11 @@ class CommandOutcome(Output):
     acknowledged: bool | None = Field(
         None, description="ACK observation, not a physical-effect guarantee."
     )
+    acknowledged_mode: str | None = Field(
+        None,
+        description="Machine mode acknowledged by command 11511 during this "
+        "command; distinct from telemetry readback.",
+    )
     machine: TelemetrySnapshot | None = Field(
         None, description="Owned standalone scale telemetry snapshot."
     )
