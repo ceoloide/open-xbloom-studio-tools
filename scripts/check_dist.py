@@ -128,8 +128,6 @@ DAEMON_PROBE = """
 import asyncio, json, os, select, signal, subprocess, sys
 from pathlib import Path
 import xbloom_studio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
 scripts, root = Path(sys.argv[1]), Path(sys.argv[2])
 (root / "home").mkdir(parents=True)
@@ -152,6 +150,9 @@ def status(reply):
 
 
 async def tools(group, calls):
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
     server = StdioServerParameters(command=str(scripts / "xbloom-studio-mcp"),
                                    args=["--group", group], env=ENV, cwd=str(root))
     async with stdio_client(server) as (read, write):
