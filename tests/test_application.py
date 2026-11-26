@@ -1358,6 +1358,24 @@ class PresetRetryTests(ServiceCase):
         result = await self.write()
         self.assertEqual(result["attempt"]["attempts_used"], 2)
 
+    async def test_a_repeat_after_wake_uses_the_idle_report_wake_elicited(self):
+        self.machine.studio.reject_preset_attempts = 1
+        await self.write()
+        await self.service.close()
+        self.service = MachineService(
+            self.store,
+            interaction_options={
+                **FAST,
+                "transition_delay": 0.25,
+                "stale_after": 0.4,
+            },
+            connector=self.machine,
+        )
+        await self.service.command("wake", {}, True, allow_untested=True)
+        result = await self.write()
+        self.assertEqual(result["attempt"]["outcome"], "saved")
+        self.assertEqual(result["attempt"]["attempts_used"], 2)
+
     def connect_without_water(self):
         self.machine.overrides[8100] = lambda p: [
             *self.machine.studio(p),

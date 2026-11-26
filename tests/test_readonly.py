@@ -427,6 +427,15 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(c.snapshot()["fields"]["scale_weight"]["available"])
         self.assertFalse(c.snapshot()["connected"])
 
+    async def test_identity_stays_available_until_disconnect(self):
+        c = client(stale_after=0.001)
+        async with c:
+            await asyncio.sleep(0.003)
+            fields = c.snapshot()["fields"]
+            for key in ("serial_number", "firmware"):
+                self.assertTrue(fields[key]["available"], key)
+        self.assertFalse(c.snapshot()["fields"]["serial_number"]["available"])
+
     async def test_wait_for_update_times_out_with_latest_state(self):
         c = client()
         async with c:

@@ -30,6 +30,11 @@ CONFIGURED_MODES = {b"\0" * 4: "pro", RECIPES_MODE: "recipes"}
 SERIAL = re.compile(rb"J15[A-Z0-9]{10}")
 FIRMWARE = re.compile(rb"V\d+\.\d+[A-Z]?\.\d+")
 INFO_BASE_SIZE = 41
+STATIC_IDENTITY_FIELDS = frozenset(
+    {"serial_number", "firmware", "model", "model_raw_hex"}
+)
+PERSISTENT_STATE_FIELDS = frozenset({"asleep"})
+NON_EXPIRING_FIELDS = STATIC_IDENTITY_FIELDS | PERSISTENT_STATE_FIELDS
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,9 @@ class DeviceState:
     def snapshot(self, stale_after: float = 5.0) -> dict[str, Any]:
         now = time.monotonic()
         fields = {
-            key: value.to_dict(now, float("inf") if key == "asleep" else stale_after)
+            key: value.to_dict(
+                now, float("inf") if key in NON_EXPIRING_FIELDS else stale_after
+            )
             for key, value in self.observations.items()
         }
         # Transport availability is independent of whether a measurement arrived.

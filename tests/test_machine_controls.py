@@ -135,6 +135,38 @@ class SettingTests(Base):
                     await call()
         self.assertEqual(m.codes(), [8100, HOME, HOME])
 
+    async def test_wake_waits_once_so_its_state_report_stays_current(self):
+        async with interaction(transition_delay=0.25, stale_after=0.4) as session:
+            woke = await session.wake()
+            state = session.snapshot()["fields"]["machine_state_code"]
+        self.assertFalse(woke["awake_observed"])
+        self.assertEqual((state["value"], state["available"]), (1, True))
+
+    async def test_wake_returns_when_the_machine_reports_awake(self):
+        m = Machine()
+        async with interaction(m, transition_delay=30) as session:
+            waking = asyncio.create_task(session.wake())
+            await transmitted(m, HOME)
+            m.emit(8011)
+            woke = await asyncio.wait_for(waking, 5)
+        self.assertTrue(woke["awake_observed"])
+
+    async def test_wake_does_not_wait_when_already_awake(self):
+        m = Machine()
+        async with interaction(m, transition_delay=30) as session:
+            m.emit(8011)
+            woke = await asyncio.wait_for(session.wake(), 5)
+        self.assertTrue(woke["awake_observed"])
+
+    async def test_wake_returns_when_the_link_drops(self):
+        m = Machine()
+        async with interaction(m, transition_delay=30) as session:
+            waking = asyncio.create_task(session.wake())
+            await transmitted(m, HOME)
+            m.drop()
+            woke = await asyncio.wait_for(waking, 5)
+        self.assertFalse(woke["awake_observed"])
+
     async def test_setting_validation_happens_before_writes(self):
         m = Machine()
         async with interaction(m, allow_untested=True) as session:
