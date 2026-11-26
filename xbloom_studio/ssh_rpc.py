@@ -28,7 +28,14 @@ from .diagnostics import request_context, sanitize_remote_result
 from .errors import error_detail
 from .rpc import call
 from .rpc_types import RemoteError
-from .rpc_wire import MAX_REQUEST, MAX_RESPONSE, frame, request, response
+from .rpc_wire import (
+    MAX_REQUEST,
+    MAX_RESPONSE,
+    default_timeout,
+    frame,
+    request,
+    response,
+)
 
 DEFAULT_RELAY_SOCKET = "/run/xbloom-studio/daemon.sock"
 REMOTE_COMMAND = ("xbloom-studio", "relay")
@@ -133,10 +140,12 @@ async def ssh_call(
     params: dict[str, Any] | None = None,
     *,
     config_file: str | os.PathLike[str] | None = None,
-    timeout: float = 30,
+    timeout: float | None = None,
 ) -> Any:
     """Send one request through SSH. Never retried: delivery may be unknown."""
     validate_host(host)
+    if timeout is None:
+        timeout = default_timeout(method, params)
     if (
         not isinstance(timeout, (int, float))
         or isinstance(timeout, bool)

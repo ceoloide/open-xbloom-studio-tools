@@ -114,10 +114,11 @@ CUP = {
     "maxItems": 2,
     "items": number("Cup reference value.", 0, 5000),
 }
+MAX_SAVE_TIMEOUT = 60
 SAVE_TIMEOUT = number(
     "Wait for a temporally correlated preset-save event, in seconds.",
     0.001,
-    60,
+    MAX_SAVE_TIMEOUT,
     default=10,
 )
 

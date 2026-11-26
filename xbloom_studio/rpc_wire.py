@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Mapping
 from typing import Any, NoReturn
 
+from .command_schema import MAX_SAVE_TIMEOUT
 from .serialization import dumps
 
 MAX_REQUEST = 2 * 1024 * 1024
 MAX_RESPONSE = 32 * 1024 * 1024
+DEFAULT_TIMEOUT = 30.0
+
+
+def default_timeout(method: str, params: Mapping[str, Any] | None) -> float:
+    if (
+        method == "machine_command"
+        and isinstance(params, Mapping)
+        and params.get("command") in ("write_preset", "write_presets")
+        and isinstance(params.get("params"), Mapping)
+    ):
+        save = params["params"].get("save_timeout")
+        if (
+            isinstance(save, (int, float))
+            and not isinstance(save, bool)
+            and math.isfinite(save)
+            and save > 0
+        ):
+            return DEFAULT_TIMEOUT + min(save, MAX_SAVE_TIMEOUT)
+    return DEFAULT_TIMEOUT
 
 
 def frame(

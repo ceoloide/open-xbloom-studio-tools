@@ -8,6 +8,7 @@ from unittest import mock
 
 from tests import fake_bleak
 from tests.frames import frame
+from xbloom_studio.client import ReadOnlyClient
 from xbloom_studio.connector import Connector, check_write_size, normalize_identity
 from xbloom_studio.simulator import ScriptedConnector
 from xbloom_studio.transport import (
@@ -197,6 +198,36 @@ class BleakConnectorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ConnectionError, "characteristic missing"):
             await link.connect(lambda: None)
         await link.disconnect()
+        self.assertFalse(link.is_connected)
+
+    async def test_drops_reported_while_connecting_do_not_lose_the_session(self):
+        self.patch(found=fake_bleak.Device(ADDRESS))
+        fake_bleak.Client.drops_while_connecting = 2
+        client = ReadOnlyClient(connector=BleakConnector(ADDRESS))
+        try:
+            await client.connect()
+            self.assertTrue(client.state.connected)
+        finally:
+            await client.disconnect()
+
+    async def test_a_drop_after_connecting_loses_the_link(self):
+        self.patch(found=fake_bleak.Device(ADDRESS))
+        fake_bleak.Client.drops_while_connecting = 1
+        drops = []
+        await BleakConnector(ADDRESS).connect(lambda: drops.append(1))
+        self.assertEqual(drops, [])
+        client = fake_bleak.Client.instances[-1]
+        client.is_connected = False
+        client.disconnected_callback(client)
+        self.assertEqual(drops, [1])
+
+    async def test_connect_that_leaves_no_link_fails(self):
+        self.patch(found=fake_bleak.Device(ADDRESS))
+        fake_bleak.Client.drops_while_connecting = 1
+        fake_bleak.Client.leaves_connected = False
+        link = BleakConnector(ADDRESS)
+        with self.assertRaisesRegex(ConnectionError, "lost while connecting"):
+            await link.connect(lambda: None)
         self.assertFalse(link.is_connected)
 
     async def test_io(self):

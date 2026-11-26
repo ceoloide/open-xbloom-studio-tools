@@ -1182,6 +1182,7 @@ class CommandTests(ServiceCase):
 
 
 A = {"slot": "A", "payload_hex": "6e6577", "flags": 4}
+NO_WATER = 0x0C
 
 
 class PresetRetryTests(ServiceCase):
@@ -1341,19 +1342,98 @@ class PresetRetryTests(ServiceCase):
         await self.service.connect(allow_untested=True)
         session = self.service.session
         self.machine.state(0x44)
-        with self.assertRaisesRegex(PresetWriteRefused, "current idle"):
+        with self.assertRaisesRegex(BusyError, "current idle"):
             await self.write()
         self.machine.state(1)
         observed = session.state.observations["machine_state_code"]
         session.state.observations["machine_state_code"] = dataclasses.replace(
             observed, monotonic_at=observed.monotonic_at - 60
         )
-        with self.assertRaisesRegex(PresetWriteRefused, "current idle"):
+        with self.assertRaisesRegex(BusyError, "current idle"):
             await self.write()
         self.assertEqual((self.frames(), self.latest()["attempts_used"]), (3, 1))
+        self.assertTrue(self.latest()["retry_allowed"])
+        self.assertIs(self.service.session, session)
         self.machine.state(1)
         result = await self.write()
         self.assertEqual(result["attempt"]["attempts_used"], 2)
+
+    def connect_without_water(self):
+        self.machine.overrides[8100] = lambda p: [
+            *self.machine.studio(p),
+            reply(8023, u32(NO_WATER)),
+        ]
+
+    async def test_a_repeat_without_water_closes_the_session_it_opened(self):
+        self.machine.studio.reject_preset_attempts = 1
+        await self.write()
+        await self.service.disconnect()
+        self.connect_without_water()
+        with self.assertRaisesRegex(BusyError, "current idle"):
+            await self.write()
+        self.assertIsNone(self.service.session)
+        self.assertEqual(self.machine.calls[-1], "disconnect")
+        write = self.latest()
+        self.assertEqual((self.frames(), write["attempts_used"]), (3, 1))
+        self.assertTrue(write["retry_allowed"])
+        del self.machine.overrides[8100]
+        result = await self.write()
+        self.assertEqual(result["attempt"]["outcome"], "saved")
+        self.assertEqual(result["attempt"]["attempts_used"], 2)
+
+    async def test_a_repeat_is_refused_on_a_low_water_report_of_any_age(self):
+        self.machine.studio.reject_preset_attempts = 1
+        await self.write()
+        await self.service.disconnect()
+        await self.service.connect(allow_untested=True)
+        session = self.service.session
+        self.machine.emit(40522, u32(0))
+        observed = session.state.observations["water_sufficient"]
+        session.state.observations["water_sufficient"] = dataclasses.replace(
+            observed, monotonic_at=observed.monotonic_at - 60
+        )
+        self.machine.state(1)
+        with self.assertRaises(BusyError):
+            await self.write()
+        write = self.latest()
+        self.assertEqual((self.frames(), len(write["attempts"])), (3, 1))
+        self.assertTrue(write["retry_allowed"])
+        self.machine.emit(40522, u32(1))
+        result = await self.write()
+        self.assertEqual(result["attempt"]["outcome"], "saved")
+        self.assertEqual(result["attempt"]["attempts_used"], 2)
+
+    async def test_a_write_without_water_sends_nothing_and_uses_no_attempt(self):
+        self.connect_without_water()
+        with self.assertRaises(BusyError):
+            await self.write()
+        presets = [{**A, "slot": slot} for slot in "ABC"]
+        with self.assertRaises(BusyError):
+            await self.service.command(
+                "write_presets",
+                {"presets": presets, "backup": presets},
+                True,
+                allow_untested=True,
+            )
+        self.assertEqual(self.frames(), 0)
+        write = self.latest()
+        self.assertEqual(
+            (write["state"], write["attempts_used"], write["retry_allowed"]),
+            ("not_sent", 0, True),
+        )
+
+    async def test_a_refusal_report_is_a_rejected_attempt(self):
+        self.service.options["ack_timeout"] = 30
+        self.machine.overrides[11510] = lambda p: [
+            reply(11510, bytes.fromhex("0000000000000000000000000040000c"), 0xC1)
+        ]
+        result = await asyncio.wait_for(self.write(), 5)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            [result["attempt"][k] for k in ("outcome", "state", "attempts_used")],
+            ["rejected", "retryable", 1],
+        )
+        self.assertEqual(self.frames(), 1)
 
     async def test_an_unreadable_journal_refuses_preset_writes(self):
         self.journal(

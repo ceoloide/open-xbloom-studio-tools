@@ -230,7 +230,7 @@ include a canonical `diagnostic` object.
 ## XB_PRESET_WRITE_REFUSED
 
 - **Machine code:** `conflict`
-- **Meaning:** The daemon's preset write journal refused a `write_preset` or `write_presets` call before sending any bytes (for example: different contents over an incomplete write, exhausted attempts, cancelled write, or non-idle repeat).
+- **Meaning:** The daemon's preset write journal refused a `write_preset` or `write_presets` call before sending any bytes (for example: different contents over an incomplete write, exhausted attempts, or cancelled write).
 - **Location:** Physical preset slot (`A`, `B`, or `C`).
 - **Fix:** Nothing was sent. Inspect `machine_preset_writes` for the slot's `write_id`, state, and `next_step`.
 
@@ -257,7 +257,7 @@ include a canonical `diagnostic` object.
 ## XB_MACHINE_BUSY
 
 - **Machine code:** `busy`
-- **Meaning:** The machine already has an active operation, a prepared upload reservation, or an in-progress command/disconnect. Requests are never queued.
+- **Meaning:** The machine already has an active operation, a prepared upload reservation, or an in-progress command/disconnect, or it has not reported a current idle state (a preset write and its repeat need one, so a machine without water refuses them). Requests are never queued.
 - **Location:** Command or method.
 - **Fix:** Inspect `machine_state` and let the active work finish, stop it, or cancel the prepared upload first.
 
@@ -265,6 +265,7 @@ include a canonical `diagnostic` object.
 
 1. Call read-only `machine_state` (`xbloom-studio machine state`) to inspect `operation`, `prepared`, and `gate`.
 2. Do not start another command or open a second connection. Report the active operation or prepared upload to the user and only stop/cancel if the user directs it.
+3. A refused preset write sent nothing and used no attempt. Once the machine is idle (for example refilled), and only for a write the user asked for, call `machine_disconnect`, then resubmit the identical `write_preset` without a separate `machine_connect`.
 
 ## XB_OWNER_LEASE_BUSY
 

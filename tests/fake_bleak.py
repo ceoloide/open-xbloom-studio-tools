@@ -16,6 +16,8 @@ class Services:
 
 class Client:
     instances: list[Client] = []
+    drops_while_connecting = 0
+    leaves_connected = True
 
     def __init__(self, device, *, timeout, disconnected_callback):
         self.device = device
@@ -31,7 +33,9 @@ class Client:
 
     async def connect(self):
         self.calls.append("connect")
-        self.is_connected = True
+        for _ in range(Client.drops_while_connecting):
+            self.disconnected_callback(self)
+        self.is_connected = Client.leaves_connected
 
     async def disconnect(self):
         self.calls.append("disconnect")
@@ -87,4 +91,6 @@ def module(*, found=None, advertised=None):
     scanner.discover = discover
     Client.instances = []
     Client.missing = ()
+    Client.drops_while_connecting = 0
+    Client.leaves_connected = True
     return types.SimpleNamespace(BleakClient=Client, BleakScanner=scanner)

@@ -26,7 +26,7 @@ from .diagnostics import (
 )
 from .errors import error_detail
 from .rpc_types import RemoteError, SocketDirectoryError, SocketPathError
-from .rpc_wire import MAX_REQUEST, MAX_RESPONSE, frame
+from .rpc_wire import MAX_REQUEST, MAX_RESPONSE, default_timeout, frame
 from .rpc_wire import request as decode_request
 from .rpc_wire import response as decode_response
 from .serialization import dumps
@@ -70,9 +70,11 @@ async def call(
     socket_path: str | os.PathLike[str],
     method: str,
     params: dict[str, Any] | None = None,
-    timeout: float = 30,
+    timeout: float | None = None,
 ) -> Any:
     """Send one request to a local daemon. Never retried: delivery may be unknown."""
+    if timeout is None:
+        timeout = default_timeout(method, params)
     payload = frame(
         {"method": method, "params": {} if params is None else params},
         MAX_REQUEST,

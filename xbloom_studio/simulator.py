@@ -26,7 +26,7 @@ POURING = 0x23
 RECIPE_COMPLETE = 0x24
 PRESET_SAVED = 0x25
 PRESET_REJECTED = 0x44
-# A non-empty 11510 response observed with a refused single-slot write.
+# The non-empty 11510 report (marker 0xC1) that refuses a single-slot write.
 PRESET_REJECTION_RESPONSE = bytes.fromhex("00000000000000000000000000400044")
 
 
@@ -146,7 +146,7 @@ class SimulatedStudio:
             self.reject_preset_attempts -= 1
             return [
                 state_notification(PRESET_REJECTED),
-                notification(11510, PRESET_REJECTION_RESPONSE, marker=0xC2),
+                notification(11510, PRESET_REJECTION_RESPONSE),
                 state_notification(IDLE),
             ]
         return [

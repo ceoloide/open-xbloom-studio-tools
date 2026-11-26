@@ -22,6 +22,9 @@ from xbloom_studio import (
 
 HOME, MODE = 8022, 11511
 PREPARE = [HOME, MODE]
+NO_WATER = 0x0C
+# V12.0D.500's refusal of 11510 in the no-water state.
+NO_WATER_REFUSAL = bytes.fromhex("0000000000000000000000000040000c")
 
 
 class Base(unittest.IsolatedAsyncioTestCase):
@@ -115,6 +118,22 @@ class SettingTests(Base):
                 await session.set_brightness(3)
             with self.assertRaises(BusyError):
                 await session.back_home()
+            with self.assertRaises(BusyError):
+                await session.wake()
+
+    async def test_home_and_wake_need_quiescence_not_a_state_report(self):
+        m = Machine()
+        # An awake reconnect on V12.0D.500 reports its identity but no state.
+        m.overrides[8100] = lambda p: [reply(8100), reply(40521, m.studio.info)]
+        m.overrides[HOME] = lambda p: [reply(HOME)]
+        async with interaction(m) as session:
+            await session.back_home()
+            self.assertFalse((await session.wake())["awake_observed"])
+            m.state(0x22)
+            for call in (session.back_home, session.wake):
+                with self.subTest(call.__name__), self.assertRaises(BusyError):
+                    await call()
+        self.assertEqual(m.codes(), [8100, HOME, HOME])
 
     async def test_setting_validation_happens_before_writes(self):
         m = Machine()
@@ -517,7 +536,7 @@ class PresetTests(Base):
 
     async def test_ack_without_save_is_not_success(self):
         m = Machine()
-        m.overrides[11510] = lambda p: [reply(11510, p.payload, 0xC2)]
+        m.overrides[11510] = lambda p: [reply(11510, b"", 0xC2)]
         async with interaction(m, allow_untested=True) as session:
             with self.assertRaises(PresetWriteError) as caught:
                 await session.write_presets(
@@ -620,6 +639,36 @@ class PresetTests(Base):
         self.assertEqual(m.codes(), [8100])
         self.assertEqual(self.path().read_text(), "existing")
 
+    async def test_preset_writes_wait_for_water(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            m.state(NO_WATER)
+            with self.assertRaises(BusyError):
+                await session.write_preset(SavedPreset("A", b"new", 4))
+            with self.assertRaises(BusyError):
+                await session.write_presets(
+                    [SavedPreset(s, b"x", 0) for s in "ABC"],
+                    backup=[SavedPreset(s, b"y", 0) for s in "ABC"],
+                    backup_path=self.path(),
+                )
+            self.assertEqual(m.codes(), [8100])
+            self.assertFalse(self.path().exists())
+            m.state(1)
+            result = await session.write_preset(SavedPreset("A", b"new", 4))
+            self.assertTrue(result["saved_observed"])
+
+    async def test_a_low_water_report_refuses_preset_writes_while_idle(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            m.emit(40522, u32(0))
+            m.state(1)
+            with self.assertRaises(BusyError):
+                await session.write_preset(SavedPreset("A", b"new", 4))
+            self.assertEqual(m.codes(), [8100])
+            m.emit(40522, u32(1))
+            result = await session.write_preset(SavedPreset("A", b"new", 4))
+            self.assertTrue(result["saved_observed"])
+
 
 class PresetAttemptTests(Base):
     """One single-slot attempt: evidence stops it early and classifies it."""
@@ -649,6 +698,70 @@ class PresetAttemptTests(Base):
             [(11510, "00000000000000000000000000400044"), (8023, "44000000")],
         )
         self.assertEqual(m.codes()[1:], [*PREPARE, 11510, 11510, 11510])
+
+    async def test_a_refusal_report_ends_the_attempt_without_an_ack_wait(self):
+        m = Machine()
+        m.overrides[11510] = lambda p: [reply(11510, NO_WATER_REFUSAL, 0xC1)]
+        result = await self.attempt(m, ack_timeout=30)
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["transmitted_write_count"], 1)
+        self.assertEqual(result["acknowledged_write_count"], 0)
+        self.assertEqual(
+            [(e["command"], e["payload_hex"]) for e in result["rejection_evidence"]],
+            [(11510, NO_WATER_REFUSAL.hex())],
+        )
+        self.assertEqual(m.codes().count(11510), 1)
+
+    async def test_an_empty_refusal_report_is_no_acknowledgment(self):
+        m = Machine()
+        m.overrides[11510] = lambda p: [reply(11510, b"", 0xC1)]
+        result = await self.attempt(m)
+        self.assertEqual(result["outcome"], "unconfirmed")
+        self.assertEqual(result["acknowledged_write_count"], 0)
+        self.assertEqual(result["rejection_evidence"], [])
+
+    async def test_a_non_empty_response_stops_a_batch(self):
+        for marker in (0xC1, 0xC2):
+            with self.subTest(marker=marker):
+                m = Machine()
+                m.overrides[11510] = lambda p, marker=marker: [
+                    reply(11510, NO_WATER_REFUSAL, marker)
+                ]
+                async with interaction(
+                    m, allow_untested=True, ack_timeout=30
+                ) as session:
+                    with self.assertRaises(PresetWriteError) as caught:
+                        await asyncio.wait_for(
+                            session.write_presets(
+                                [SavedPreset(s, b"x", 0) for s in "ABC"],
+                                backup=[SavedPreset(s, b"y", 0) for s in "ABC"],
+                                backup_path=self.path(f"{marker}.json"),
+                            ),
+                            2,
+                        )
+                result = caught.exception.result
+                self.assertEqual(result["outcome"], "rejected")
+                self.assertEqual(
+                    (result["acknowledged_slots"], result["acknowledged_write_count"]),
+                    ([], 0),
+                )
+                self.assertEqual(
+                    [e["payload_hex"] for e in result["rejection_evidence"]],
+                    [NO_WATER_REFUSAL.hex()],
+                )
+                self.assertEqual(m.codes().count(11510), 1)
+
+    async def test_low_water_while_preparing_stops_before_any_preset_frame(self):
+        for report in (reply(40522, u32(0)), reply(8023, u32(NO_WATER))):
+            with self.subTest(report=report.hex()):
+                m = Machine()
+                m.overrides[MODE] = lambda p, m=m, report=report: [
+                    *m.studio(p),
+                    report,
+                ]
+                result = await self.attempt(m)
+                self.assertEqual(result["outcome"], "no_preset_frame")
+                self.assertEqual(m.codes()[1:], PREPARE)
 
     async def test_rejection_state_is_checked_before_the_next_frame(self):
         m = Machine()

@@ -212,15 +212,24 @@ class BleakConnector:
                 raise ConnectionError(
                     "xBloom not advertising; release other Bluetooth clients"
                 )
+        # BlueZ can report a disconnection while connect() retries internally,
+        # before the link it returns is established; only that link can be lost.
+        established = False
+
+        def disconnected(_: object) -> None:
+            if established:
+                on_disconnect()
+
         self._client = bleak.BleakClient(
-            device,
-            timeout=self.timeout,
-            disconnected_callback=lambda _: on_disconnect(),
+            device, timeout=self.timeout, disconnected_callback=disconnected
         )
         await self._client.connect()
+        if not self._client.is_connected:
+            raise ConnectionError("Connection lost while connecting")
         for uuid in (COMMAND, STATUS):
             if self._client.services.get_characteristic(uuid) is None:
                 raise ConnectionError(f"Required Studio characteristic missing: {uuid}")
+        established = True
 
     def _require_client(self) -> Any:
         if self._client is None:

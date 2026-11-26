@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .client import SessionError
-from .command_schema import recipe_configuration_untested
+from .command_schema import MAX_SAVE_TIMEOUT, recipe_configuration_untested
 from .protocol import Packet, decode
 
 if TYPE_CHECKING:
@@ -276,6 +276,8 @@ class MachineControls:
 
         def _require_quiescent(self, *, allow_prepared: bool = False) -> None: ...
 
+        def _require_preset_water(self) -> None: ...
+
         async def _prepare(self) -> None: ...
 
         def _water_source(self) -> int: ...
@@ -422,7 +424,8 @@ class MachineControls:
         )
 
     async def back_home(self) -> dict[str, Any]:
-        return await self._setting(8022, prepare=False, finish=False)
+        # A recovery route: an awake reconnect may report no state code yet.
+        return await self._setting(8022, prepare=False, finish=False, idle=False)
 
     async def wake(self) -> dict[str, Any]:
         result = await self.back_home()
@@ -490,7 +493,8 @@ class MachineControls:
     ) -> dict[str, Any]:
         """One complete A/B/C batch per connection; supplied backup is not readback.
 
-        The caller-supplied previous presets persist before the first write.
+        The caller-supplied previous presets persist before the first write. A
+        non-empty response to any write stops the batch.
         On failure partial progress and the file remain; no same-session rollback.
         """
         self._require_untested("Batch preset writes")
@@ -505,9 +509,11 @@ class MachineControls:
         backup_path: str | os.PathLike[str] | None,
         save_timeout: float,
     ) -> dict[str, Any]:
-        _number("save_timeout", save_timeout, 0.001, 60)
+        _number("save_timeout", save_timeout, 0.001, MAX_SAVE_TIMEOUT)
         async with self._lifecycle:
-            self._require_idle(allow_no_water=True)
+            # V12.0D.500 refuses preset writes without water, unlike uploads.
+            self._require_idle()
+            self._require_preset_water()
             if self._preset_write_used:
                 raise SessionError(
                     "Each preset write requires a fresh interaction; "
@@ -524,8 +530,6 @@ class MachineControls:
                     },
                 )
             slots = list(dict.fromkeys(preset.slot for preset in presets))
-            # Only a single-slot attempt stops early on evidence; batches keep
-            # their planned sequence.
             single = len(slots) == 1
             acknowledged: list[str] = []
             evidence: list[dict[str, Any]] = []
@@ -594,15 +598,9 @@ class MachineControls:
                     start = cursor
                 result["transmitted_write_count"] += 1
 
-            def terminal() -> None:
-                """Stop before any byte of the next frame on terminal evidence.
-
-                Also the frame's command guard, so it is rechecked after the
-                frame's journal hook and immediately before its first byte:
-                the machine must still be quiescent. Other state reports,
-                such as the attempt's own 0x43, are not refused; motion is.
-                """
+            def guard_next_frame() -> None:
                 self._require_quiescent()
+                self._require_preset_water()
                 if not single or start is None:
                     return
                 if since(start, is_save) is not None:
@@ -622,7 +620,7 @@ class MachineControls:
             try:
                 await self._prepare()
                 for index, preset in enumerate(presets):
-                    terminal()
+                    guard_next_frame()
                     if hook is not None and preset.slot not in announced:
                         announced.add(preset.slot)
                         await hook(preset.slot)
@@ -630,7 +628,7 @@ class MachineControls:
                         11510,
                         preset.body(),
                         2,
-                        before_write=terminal,
+                        before_write=guard_next_frame,
                         on_transmit=transmitted,
                     )
                     if packet.payload:
@@ -642,11 +640,10 @@ class MachineControls:
                                 "correlation": "response_to_this_write",
                             }
                         )
-                        if single:
-                            raise SessionError(
-                                "Preset write response was not an empty "
-                                "acknowledgment; no further writes sent"
-                            )
+                        raise SessionError(
+                            "Preset write response was not an empty "
+                            "acknowledgment; no further writes sent"
+                        )
                     if preset.slot not in acknowledged:
                         acknowledged.append(preset.slot)
                     result["acknowledged_write_count"] += 1
