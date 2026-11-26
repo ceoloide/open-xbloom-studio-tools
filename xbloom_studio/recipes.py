@@ -3,7 +3,8 @@
 A plan records the encoder version, the recipe snapshot and the exact bytes
 to send. Retained plans are repeated exactly as stored, after checking that
 their recorded encoder still reproduces them; they are never re-encoded with
-a newer encoder.
+a newer encoder. Only whether a repeat needs experimental opt-in follows
+current hardware evidence.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from .coffee import (
     encode_coffee_recipe,
 )
 from .control import VALIDATED_UPLOAD_CUP_LIMITS, EncodedRecipe
-from .machine_controls import EncodedTeaRecipe
+from .machine_controls import VALIDATED_TEA, EncodedTeaRecipe
 from .pagination import integer
 from .recipe_validation import (
     RATIO_WRAP,
@@ -92,9 +93,17 @@ COFFEE_COMMON_LIMITATIONS = [
     "The watchdog budgets filling and pauses plus 600 seconds; it is not a duration "
     "prediction.",
 ]
-TEA_LIMITATIONS = [
-    "Tea encoding follows the reference recipe format; physical execution remains "
-    "unvalidated.",
+TEA_TESTED_LIMITATION = (
+    "This exact content is hardware-tested for a direct start only: one 90 ml BP "
+    "spiral steep at 3 ml/s for 30 s, from one completed run on firmware "
+    "V12.0D.500, judged from telemetry. Uploading it first still needs "
+    "allow_untested."
+)
+TEA_UNTESTED_LIMITATION = (
+    "This content differs from the one hardware-tested single steep, so physical "
+    "execution remains unvalidated."
+)
+TEA_COMMON_LIMITATIONS = [
     "Dose is manual preparation metadata; load the tea and prepare the appropriate "
     "brewer and cup.",
     "Soak volumes do not predict cup yield; automatic siphon top-up is firmware "
@@ -118,10 +127,18 @@ LEGACY_LIMITATIONS: dict[tuple[str, str], frozenset[str]] = {
         {
             "6b19e8777809910281876b857c67bf4f9c8c6799b89ad6f9725cad745b675e4c",
             "c4221afc0f162d0c7d07162f4f2fd27cebba135e9370b801ac73335137e4da60",
+            # Before any tea content was hardware-tested, with and without
+            # the ratio wrap note.
+            "b07ee2c548c1371c65f9538cf8e6ffdcdc90b79290e9ba2046d682c2f8dcf1b4",
+            "9701cf9dd0ec96141edc4e889c85de07796bb6071b91c8fd05f4faeb9660ef5e",
         }
     ),
     ("tea", LEGACY_TEA_ENCODER_VERSION): frozenset(
-        {"6b19e8777809910281876b857c67bf4f9c8c6799b89ad6f9725cad745b675e4c"}
+        {
+            "6b19e8777809910281876b857c67bf4f9c8c6799b89ad6f9725cad745b675e4c",
+            # Before any tea content was hardware-tested; v1 cannot wrap.
+            "b07ee2c548c1371c65f9538cf8e6ffdcdc90b79290e9ba2046d682c2f8dcf1b4",
+        }
     ),
 }
 
@@ -166,11 +183,14 @@ def compile_recipe(document: Any) -> dict[str, Any]:
     return _compile_recipe(document)
 
 
-def validate_retained_plan(plan: dict[str, Any]) -> None:
+def validate_retained_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Check that a retained plan is reproduced by its recorded encoder.
 
-    Nothing is rewritten: the stored plan is what repeats. Unknown encoder
-    versions, malformed plans and any changed field refuse the repeat.
+    Returns the recompiled plan. Nothing is rewritten: the stored plan is what
+    repeats. Unknown encoder versions, malformed plans and any changed field
+    refuse the repeat, except advisory text recognized by digest and a tea
+    plan's requires_untested recorded true before its content was
+    hardware-tested.
     """
     if not isinstance(plan, dict) or not isinstance(plan.get("recipe_snapshot"), dict):
         raise ValueError("Retained plan is malformed; inspect before recompiling")
@@ -187,10 +207,18 @@ def validate_retained_plan(plan: dict[str, Any]) -> None:
             continue
         if key == "limitations" and _recognized_limitations(plan, mode, version):
             continue
+        if (
+            key == "requires_untested"
+            and mode == "tea"
+            and plan.get(key) is True
+            and value is False
+        ):
+            continue
         raise ValueError(
             "Historical plan is incompatible or has been modified; "
             "inspect before recompiling"
         )
+    return expected
 
 
 def upload_requires_untested(plan: object) -> bool:
@@ -205,11 +233,18 @@ def upload_requires_untested(plan: object) -> bool:
     from the ``VALIDATED_COFFEE_ENCODER_VERSION`` encoder, still reproduced by
     it, for the xDripper reference cup limits, with the grind-size upload
     selected (command 8001), no bypass, no vibration, numeric pour
-    temperatures and pours of 1..127 ml, each a single payload record. Every
-    other plan keeps its recorded requirement, and a malformed plan requires
-    opt-in.
+    temperatures and pours of 1..127 ml, each a single payload record. A tea
+    plan always requires opt-in here, even when its ``requires_untested`` is
+    false: tea was observed only as a direct start, never uploaded first.
+    Every other plan keeps its recorded requirement, and a malformed plan
+    requires opt-in.
     """
     if not isinstance(plan, dict):
+        return True
+    execution = plan.get("execution")
+    if not isinstance(execution, list) or any(
+        not isinstance(step, dict) or step.get("kind") == "tea" for step in execution
+    ):
         return True
     if plan.get("requires_untested") is False:
         return False
@@ -336,6 +371,7 @@ def _tea_plan(doc: dict[str, Any], version: object) -> dict[str, Any]:
     if not isinstance(version, str) or version not in TEA_ENCODERS:
         raise ValueError("Historical tea encoder version is unknown or incompatible")
     encoded = TEA_ENCODERS[version](doc)
+    tested = encoded == VALIDATED_TEA
     wrap = [
         RATIO_WRAP
         for w in check_recipe(doc)["warnings"]
@@ -358,9 +394,13 @@ def _tea_plan(doc: dict[str, Any], version: object) -> dict[str, Any]:
                 "timeout": timeout,
             }
         ],
-        "requires_untested": True,
+        "requires_untested": not tested,
         "requires_user": [],
-        "limitations": [*TEA_LIMITATIONS, *wrap],
+        "limitations": [
+            TEA_TESTED_LIMITATION if tested else TEA_UNTESTED_LIMITATION,
+            *TEA_COMMON_LIMITATIONS,
+            *wrap,
+        ],
     }
 
 
@@ -453,5 +493,7 @@ class HistoryService:
 
     def repeat_plan(self, ident: str) -> dict[str, Any]:
         plan: dict[str, Any] = self.store.operation(ident)["plan"]
-        validate_retained_plan(plan)
-        return deepcopy(plan)
+        current = validate_retained_plan(plan)
+        # The stored content repeats; whether it needs opt-in follows today's
+        # evidence, which may now cover a tea plan recorded as untested.
+        return {**deepcopy(plan), "requires_untested": current["requires_untested"]}

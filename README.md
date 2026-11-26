@@ -11,13 +11,19 @@ of their respective owners.
 
 ## Status
 
-Alpha (0.0.2a0, the `0.0.2-alpha` prerelease). Interfaces may change. One
-route is validated on hardware: uploading, then starting, a structured
-xDripper coffee recipe within the limits under
-[Recipes and history](#recipes-and-history). Brewing other coffee or tea from
-encoded recipes, starting a recipe directly, preset writes and some settings
-commands are not validated on hardware and stay behind an explicit
-experimental opt-in.
+Alpha (0.0.2a0, the `0.0.2-alpha` prerelease). Interfaces may change. Two
+routes are validated on hardware, each within the limits under
+[Recipes and history](#recipes-and-history):
+
+- Uploading, then starting, a structured xDripper coffee recipe.
+- Starting one exact single-steep tea recipe directly.
+
+Brewing anything else from an encoded recipe stays behind an explicit
+experimental opt-in: other coffee, coffee started directly, tea with other
+settings or more than one steep, and every tea upload. Preset writes and some
+settings commands are not validated on hardware either and need the same
+opt-in. Stop and pause need no opt-in, but neither is hardware-tested during
+tea.
 
 ## Install
 
@@ -93,6 +99,14 @@ For experimental work, open the session with
 standard session, run `xbloom-studio machine disconnect` before reconnecting.
 Experimental actions still need their own `--allow-untested`.
 
+Preparing an action switches the machine to pro mode and leaves it there.
+This happens before every water, grinder, coffee and tea start, every recipe
+upload, entering the scale, every preset write and most settings commands.
+`back_home`, `wake`, `set_mode`, the two housekeeping commands and starting an
+uploaded recipe do not switch it. To return to recipes mode, run
+`xbloom-studio machine command set_mode --params FILE --allow-control` with a
+JSON file holding `{"mode": "recipes"}`.
+
 A single-slot preset write (`write_preset`) is one attempt of three planned
 frames. If an attempt is rejected or unconfirmed, the daemon allows the
 identical slot, flags and payload again from a fresh connection, at most three
@@ -161,9 +175,11 @@ library, by default `$XDG_DATA_HOME/xbloom-studio/xbloom-studio.sqlite3`, keeps
 recipe revisions, aliases and every attempt with its exact plan, so a repeat
 reuses the stored plan byte for byte.
 
-Structured coffee and tea recipes are experimental on hardware. One upload
-route is validated: a structured coffee recipe for the xDripper with the
-grind-size upload selected (`grinder_enabled` or `set_grinder_size` true,
+Structured coffee and tea recipes are experimental on hardware, apart from
+one coffee route and one tea route.
+
+The coffee route is an upload: a structured coffee recipe for the xDripper
+with the grind-size upload selected (`grinder_enabled` or `set_grinder_size` true,
 sent as command 8001; the option selects that upload and does not by itself
 establish that the machine grinds), no bypass, no vibration, numeric pour
 temperatures and pours of 1 to 127 ml each. Its evidence is one observed brew
@@ -185,10 +201,38 @@ longer matches; a repeat of that brew uploads the same way. Passing
 `--allow-untested` explicitly keeps the earlier rules, where the digest is
 optional. The plan's own `requires_untested` is unchanged and still governs
 a direct start (`brew`, `history repeat`, `operation_start`), which keeps
-needing `--allow-untested`. Every other recipe, including opaque `native`
-bytes with the same settings, keeps its opt-in. A daemon that predates this
-omits `upload_requires_untested` and requires the opt-in for this upload too:
-follow `requires_untested`.
+needing `--allow-untested`. Every other recipe upload, including opaque
+`native` bytes with the same settings, keeps its opt-in. A daemon that
+predates this omits `upload_requires_untested` and requires the opt-in for
+this upload too: follow `requires_untested`.
+
+The tea route is a direct start of exactly one tea recipe, with `brew`,
+`history repeat` or `operation_start` and without `--allow-untested`. The
+recipe has one steep: 90 ml at `BP`, the `spiral` pattern, 3 ml/s, no
+vibration and 30 s. Every other setting is at its default.
+`xbloom-studio recipe constraints` lists it as `tea_reference.hardware_tested`.
+The dose is not sent to the machine, so any valid dose matches. The check
+compares the exact bytes sent: change any setting and the opt-in applies
+again. For this recipe the plan's `requires_untested` is `false`, and an exact
+repeat needs no opt-in, even one recorded before this release. Its evidence
+is one completed run with 4 g of tea on firmware V12.0D.500, judged from
+telemetry. Nobody has reported what reached the cup.
+
+Uploading any tea recipe, this one included, needs `--allow-untested`:
+`upload_requires_untested` is always `true` for tea. The following are not
+tested on hardware: more than one steep, any tea upload, the `center` and
+`ring` patterns, numeric and `RT` temperatures, other volumes, flows,
+vibration and durations, and stop or pause during tea. One two-steep attempt
+failed during the first steep's siphon top-up, when the machine reported
+insufficient water. One earlier single-steep attempt at `RT` reported no
+water poured for about 90 s and was stopped.
+
+A tea steep's `volume_ml` (at most 90) is the soak water. After the soak, the
+firmware adds siphon top-up water. In the two observed pours the top-up was
+about 30 to 40 ml by the machine's uncalibrated estimate. The completed steep
+went from 90 ml to about 119 ml, which fits the about 120 ml per steep that the
+xBloom app shows. Nothing measures the cup yield, so treat every output figure
+as nominal.
 
 The bundled starter recipes, coffee examples and tea profiles are original to
 this project. Recipe imports are user-directed: one public recipe page at a

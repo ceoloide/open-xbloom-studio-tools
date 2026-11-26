@@ -43,7 +43,10 @@ Recipe modes:
   127 ml), pinned by the preview digest. A direct start keeps the opt-in; see
   the `xbloom-studio-operate` skill.
 - `tea`: one native tea recipe in `tea`; use the `xbloom-studio-tea` skill to
-  craft it.
+  craft it. Hardware execution needs `allow_untested`, except a direct start
+  of the recipe in `tea_reference.hardware_tested` (one 90 ml `BP` `spiral`
+  steep at 3 ml/s for 30 s, every other setting at its default). A tea upload
+  always needs it.
 - `host`: ordered `steps` of `water`, `grind`, `wait`, `user` and `tare`,
   run as separate manual operations. A host plan is not equivalent to a
   native recipe; never substitute one for the other without saying so.

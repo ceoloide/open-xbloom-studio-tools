@@ -392,8 +392,9 @@ Plan = model(
         "machine_prepare only: the experimental opt-in check for a plan "
         "recipe_upload otherwise accepts; not a promise that it can be uploaded. "
         "When false for an experimental plan, upload without allow_untested must "
-        "pass this preview's recipe_sha256 as expected_recipe_sha256. Absent from "
-        "older daemons and recipe_preview; then follow requires_untested.",
+        "pass this preview's recipe_sha256 as expected_recipe_sha256. Always true "
+        "for tea, even when requires_untested is false. Absent from older "
+        "daemons and recipe_preview; then follow requires_untested.",
     ),
     requires_user=(list[str], ..., "Known host preparation instructions."),
     limitations=(list[str], ..., "Evidence and physical workflow limits."),

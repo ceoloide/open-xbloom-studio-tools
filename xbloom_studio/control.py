@@ -740,7 +740,10 @@ class Interaction(MachineControls, ReadOnlyClient):
             "automatic_reconnect": False,
             "automatic_start_retry": False,
             "untested_requires": "allow_untested=True",
-            "untested_operations": list(MachineControls.UNTESTED_METHODS),
+            "untested_operations": [*MachineControls.UNTESTED_METHODS, "upload_tea"],
+            "conditionally_untested_operations": {
+                "start_tea": "any content except the hardware-tested single steep"
+            },
             "untested_recipe_options": ["grinder_enabled", "bypass_ml>0", "cup_limits"],
             "active_setting_queries": ["read_pour_radius", "read_vibration"],
             "firmware_update": False,

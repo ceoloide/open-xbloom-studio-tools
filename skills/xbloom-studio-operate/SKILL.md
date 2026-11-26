@@ -20,8 +20,8 @@ Physical actions need the user's explicit request for that action in this
 conversation. Installing the tools, saving a recipe, a recipe link or an
 earlier unrelated brew is not permission. Pass `allow_control=true` only for
 an action the user asked for, and `allow_untested=true` only when the user
-accepts that the action is experimental (native coffee and tea recipes and
-some commands, as reported by the tools). Do not ask again for something the
+accepts that the action is experimental (most native coffee and tea recipes
+and some commands, as reported by the tools). Do not ask again for something the
 user already answered in this session. Pass `allow_untested=true` only where
 the preview reports that the chosen route needs it; see "Upload now, start
 later".
@@ -117,6 +117,13 @@ with `operation_start` still needs `allow_untested=true`. If the preview has
 no `upload_requires_untested` field, the daemon is older: follow
 `requires_untested` for the upload too.
 
+Tea is the reverse case. For one recipe, one 90 ml `BP` `spiral` steep at
+3 ml/s for 30 s with every other setting at its default, `requires_untested`
+is `false`. Start it, or an exact repeat of it, with `operation_start` without
+`allow_untested`. Its `upload_requires_untested` stays `true`, as for every
+tea. More than one steep, other tea settings, tea uploads and stop or pause
+during tea are not hardware-tested.
+
 ## Settings and scale
 
 Read `machine_capabilities` first: it lists each command's parameter schema
@@ -129,11 +136,14 @@ available.
 Preset writes are experimental. A backup of a slot's previous contents is
 optional for `write_preset` and required for `write_presets`; use only
 contents the user supplies, never ones built from local aliases. Nothing
-reads a preset back: even a success reports `readback_verified=false`. A
-preset write switches the machine to pro mode while preparing and leaves it
-there; `set_mode` with `recipes` switches back if the user wants. Both report
-the switch the machine acknowledged as `acknowledged_mode`, a failed write's
-`details` included; it is not a telemetry readback.
+reads a preset back: even a success reports `readback_verified=false`.
+
+Every water, grinder, coffee and tea start, every upload, `enter_scale`, every
+preset write and most settings commands switch the machine to pro mode while
+preparing and leave it there. `set_mode` with `recipes` switches back if the
+user wants. A preset write and `set_mode` report the switch the machine
+acknowledged as `acknowledged_mode`, a failed write's `details` included; it
+is not a telemetry readback.
 
 One `write_preset` call is one attempt of three planned frames. Its result's
 `attempt` field gives the `outcome` (`saved`, `saved_cleanup_failed`,

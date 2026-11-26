@@ -4,7 +4,7 @@
   "gates": {
     "handshake": "Sent by every session after subscribing.",
     "control": "Requires allow_control=True.",
-    "untested": "Requires allow_control=True and allow_untested=True.",
+    "untested": "Requires allow_control=True and allow_untested=True, unless a hardware-tested recipe route sends it (see machine_prepare).",
     "parameter": "An empty query requires allow_control=True. Initialization with a value also requires allow_untested=True."
   },
   "commands": [

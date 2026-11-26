@@ -384,9 +384,16 @@ class PlanTest(unittest.TestCase):
         )
         for digests in recipes_module.LEGACY_LIMITATIONS.values():
             self.assertTrue(all(len(value) == 64 for value in digests))
+        tested_steep = {
+            "volume_ml": 90,
+            "steep_seconds": 30,
+            "temperature": "BP",
+            "pattern": "spiral",
+        }
         current = {
             digest(compile_recipe(coffee())["limitations"]),
             digest(compile_recipe(tea())["limitations"]),
+            digest(compile_recipe(tea(steeps=[tested_steep]))["limitations"]),
         }
         recorded = set().union(*recipes_module.LEGACY_LIMITATIONS.values())
         self.assertFalse(current & recorded)

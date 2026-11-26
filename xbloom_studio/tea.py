@@ -1,8 +1,10 @@
 """Pure structured tea recipe encoding; no storage, network or machine I/O.
 
-Physical brewing remains unvalidated. Encoder version identifiers are
-persisted in plans: the legacy version accepts only the original fields and
-temperatures, so plans it produced repeat byte for byte.
+One encoded value, machine_controls.VALIDATED_TEA, is hardware-tested for a
+direct start; physical brewing of any other tea content remains unvalidated.
+Encoder version identifiers are persisted in plans: the legacy version
+accepts only the original fields and temperatures, so plans it produced
+repeat byte for byte.
 """
 
 from __future__ import annotations
@@ -37,12 +39,6 @@ def _encode_tea_recipe_v1(document: dict[str, Any]) -> EncodedTeaRecipe:
 def _encode_tea_recipe(
     document: dict[str, Any], *, legacy: bool = False
 ) -> EncodedTeaRecipe:
-    """Payload: steep count*8, then 8 bytes per steep, then grind and ratio*10.
-
-    Each steep is volume, temperature code, pattern code, vibration flags,
-    negated seconds remainder, minutes<<5, RPM on the first steep only and
-    flow*10. Ratio*10 is narrowed to one byte.
-    """
     report = check_recipe(document)
     if not report["valid"]:
         raise RecipeValidationError(report)
@@ -62,6 +58,18 @@ def _encode_tea_recipe(
         raise ValueError(
             "Historical tea v1 cannot contain extended settings or temperatures"
         )
+    return encode_tea_content(content)
+
+
+def encode_tea_content(content: dict[str, Any]) -> EncodedTeaRecipe:
+    """Machine content for normalized, valid tea fields; validates nothing.
+
+    Payload: steep count*8, then 8 bytes per steep, then grind and ratio*10.
+    Each steep is volume, temperature code, pattern code, vibration flags,
+    negated seconds remainder, minutes<<5, RPM on the first steep only and
+    flow*10. Ratio*10 is narrowed to one byte.
+    """
+    steeps = content["steeps"]
     fixed = TEA_REFERENCE["fixed_new_recipe_values"]
     sentinels = TEA_REFERENCE["temperature_sentinels"]
     payload = bytearray([len(steeps) * 8])

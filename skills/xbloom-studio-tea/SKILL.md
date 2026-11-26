@@ -56,7 +56,10 @@ bounds rather than from memory. Notable rules: the dose is preparation
 metadata (the machine does not weigh tea), `RT` and `BP` are machine
 temperature choices rather than measurements, and output is nominal: the
 starter drafts assume two steeps for about 240 ml, which is not a measured
-cup volume. Never promise an exact yield.
+cup volume. A steep's `volume_ml` (at most 90) is the soak water. The firmware
+then adds siphon top-up water, about 30 to 40 ml by the machine's uncalibrated
+estimate in two pours. A steep therefore counts as about 120 ml nominal. Never
+promise an exact yield.
 
 ## Validate and preview
 
@@ -71,6 +74,12 @@ cup volume. Never promise an exact yield.
    the valid draft to the plan that would be sent.
 
 Report the validation and preview results with the draft's limitations. Tea
-brewing on hardware is experimental and requires the `allow_untested` opt-in at
-start time. Hand storage requests to `xbloom-studio-recipes` and brewing
+brewing on hardware is experimental and needs the `allow_untested` opt-in, with
+one exception. A direct start of the recipe in `tea_reference.hardware_tested`
+needs no opt-in: one 90 ml `BP` `spiral` steep at 3 ml/s for 30 s, with every
+other setting at its default. Its plan shows `requires_untested: false`, and
+changing any setting brings the opt-in back. Uploading tea always needs it.
+More than one steep, other settings and stop or pause during tea are not
+hardware-tested. Do not move a draft toward that recipe only to avoid the
+opt-in. Hand storage requests to `xbloom-studio-recipes` and brewing
 requests to `xbloom-studio-operate`.

@@ -378,9 +378,10 @@ def _recipe_tools(tool: Tool, invoke: Invoke) -> None:
     async def recipe_validate(document: Any) -> dict[str, Any]:
         """Check all fields without saving or machine access. Return valid, errors
         with JSON Pointer paths and allowed values, warnings, normalized data and
-        execution_supported. Structured coffee/tea compile locally and require
-        allow_untested for direct hardware execution; machine_prepare reports
-        whether recipe_upload still needs it. Opaque native bytes get
+        execution_supported. Structured coffee/tea compile locally. A direct
+        start needs allow_untested except for the one hardware-tested tea
+        (tea_reference.hardware_tested); machine_prepare reports requires_untested
+        and whether recipe_upload still needs it. Opaque native bytes get
         envelope/settings validation only. Fix errors before create/update.
         """
         return await invoke("recipe_validate", {"document": document})
@@ -778,6 +779,7 @@ def _machine_tools(
         ID/revision. requires_untested governs operation_start;
         upload_requires_untested is the recipe_upload opt-in check for a plan it
         otherwise accepts (absent from older daemons: follow requires_untested).
+        They can differ either way: tea upload always needs opt-in.
 
         Request examples: {"kind":"recipe","reference":"B","revision":1};
         {"kind":"recipe","document":{"name":"Pour","steps":[{"kind":"water",

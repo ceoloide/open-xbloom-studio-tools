@@ -9,6 +9,7 @@ from typing import Any
 
 from .command_schema import MAX_OPERATION_TIMEOUT, water_timeout
 from .diagnostic_catalog import validation_diagnostic
+from .machine_controls import VALIDATED_TEA
 
 Rule = dict[str, Any]
 
@@ -220,14 +221,39 @@ TEA_REFERENCE: dict[str, Any] = {
     ),
     "execution_supported": True,
     "requires_untested": True,
+    "hardware_tested": {
+        "route": "direct start only; recipe_upload of the same content still "
+        "requires allow_untested",
+        "steep": {
+            "volume_ml": 90,
+            "temperature": "BP",
+            "pattern": "spiral",
+            "flow_ml_s": 3,
+            "vibration_before": False,
+            "vibration_after": False,
+            "steep_seconds": 30,
+        },
+        "metadata": {
+            "grinder_size_metadata": 50,
+            "rpm_metadata": 120,
+            "ratio_metadata": 15,
+        },
+        "evidence": "One completed single-steep run on firmware V12.0D.500 with "
+        "4 g of tea, judged from telemetry. By the machine's uncalibrated "
+        "estimate it poured 90 ml, then siphon top-up reached about 119 ml. The "
+        "cup contents were not reported. Only this exact encoded content is "
+        "covered.",
+        "requires_untested": False,
+    },
     "cached_cup_limits": [40, 80],
     "temperature_sentinels": {"RT": 39, "BP": 96},
     "pattern_codes": {"center": 0, "ring": 1, "spiral": 2},
 }
 
 TEA_UNVALIDATED = (
-    "Tea encoding follows the reference recipe format; physical execution "
-    "remains unvalidated and requires allow_untested."
+    "This tea content differs from the one hardware-tested single steep "
+    "(tea_reference.hardware_tested), so physical execution remains unvalidated "
+    "and requires allow_untested."
 )
 COFFEE_UNVALIDATED = (
     "Coffee encoding follows the reference recipe format; physical workflow "
@@ -262,8 +288,9 @@ def recipe_constraints() -> dict[str, Any]:
                 "are strict integers.",
                 "Native payload bytes are opaque; validity covers envelope/settings "
                 "only.",
-                "Tea and coffee hardware execution remains unvalidated and requires "
-                "allow_untested.",
+                "Coffee hardware execution and tea content other than "
+                "tea_reference.hardware_tested remain unvalidated and require "
+                "allow_untested. Tea upload always requires it.",
                 "Unknown fields are rejected; coffee/source objects and description "
                 "accept JSON metadata.",
             ],
@@ -564,8 +591,8 @@ def check_recipe(document: Any) -> dict[str, Any]:
                     content["set_grinder_size"],
                 )
     json_value(document)
-    warnings = _warnings(document, mode, bool(errors))
     normalized = None if errors else _normalize(document, mode, profile)
+    warnings = _warnings(document, mode, normalized)
     report: dict[str, Any] = {
         "valid": not errors,
         "errors": errors,
@@ -692,7 +719,17 @@ def _check_coffee(
             )
 
 
-def _warnings(document: Any, mode: Any, failed: bool) -> list[dict[str, Any]]:
+def _hardware_tested_tea(normalized: dict[str, Any] | None) -> bool:
+    if normalized is None:
+        return False
+    from .tea import encode_tea_content  # Imported here: tea imports this module.
+
+    return encode_tea_content(normalized["tea"]) == VALIDATED_TEA
+
+
+def _warnings(
+    document: Any, mode: Any, normalized: dict[str, Any] | None
+) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = []
     if mode == "native":
         warnings.append(
@@ -702,7 +739,7 @@ def _warnings(document: Any, mode: Any, failed: bool) -> list[dict[str, Any]]:
                 "recipe semantics are unknown.",
             }
         )
-    elif mode == "tea":
+    elif mode == "tea" and not _hardware_tested_tea(normalized):
         warnings.append(
             {"code": "tea_hardware_unvalidated", "message": TEA_UNVALIDATED}
         )
@@ -710,7 +747,7 @@ def _warnings(document: Any, mode: Any, failed: bool) -> list[dict[str, Any]]:
         warnings.append(
             {"code": "coffee_hardware_unvalidated", "message": COFFEE_UNVALIDATED}
         )
-    if mode == "tea" and not failed:
+    if mode == "tea" and normalized is not None:
         dose = document["tea"]["dose_g"]
         if dose != int(dose):
             warnings.append(

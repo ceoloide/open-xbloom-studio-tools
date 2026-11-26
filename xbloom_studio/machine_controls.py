@@ -213,6 +213,12 @@ class EncodedTeaRecipe:
         validate_cup_limits(self.cup_limits)
 
 
+# The one tea content seen to complete on hardware (V12.0D.500): one 90 ml BP
+# spiral steep at 3 ml/s, no vibration, 30 s. Payload and cup limits are all
+# the machine receives, so only this exact value skips the tea opt-in.
+VALIDATED_TEA = EncodedTeaRecipe(bytes.fromhex("085a600200e200781e3296"), (40, 80))
+
+
 def _batch(presets: object) -> tuple[SavedPreset, ...]:
     if not isinstance(presets, (list, tuple)) or len(presets) != 3:
         raise ValueError("Provide all three SavedPreset objects, A/B/C")
@@ -289,7 +295,6 @@ class MachineControls:
         "set_pour_radius_level",
         "initialize_vibration",
         "set_cup_limits",
-        "start_tea",
         "set_preset_count",
         "set_preset_order",
         "quit_recipe_preparation",
@@ -889,7 +894,8 @@ class MachineControls:
     ) -> Operation:
         if not isinstance(recipe, EncodedTeaRecipe):
             raise TypeError("Provide EncodedTeaRecipe with complete tea content")
-        self._require_untested("Dedicated tea recipe execution")
+        if recipe != VALIDATED_TEA:
+            self._require_untested("Dedicated tea recipe execution")
         async with self._lifecycle:
             self._require_idle()
             self._water_source()
