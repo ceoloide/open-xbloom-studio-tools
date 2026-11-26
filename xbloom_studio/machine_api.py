@@ -24,7 +24,7 @@ from .command_schema import (
     recipe_configuration_untested,
     validate_command_params,
 )
-from .control import IDLE_STATES, NO_WATER_STATE, BusyError, EncodedRecipe, Interaction
+from .control import IDLE_STATES, BusyError, EncodedRecipe, Interaction
 from .machine_controls import (
     SLOTS,
     ControlPermissionError,
@@ -43,7 +43,6 @@ from .preset_writes import (
     MAX_ATTEMPTS,
     STARTED,
     SUPERSEDED,
-    PresetWriteRefused,
     admit,
     attempt_evidence,
     fold,
@@ -69,10 +68,10 @@ COMMANDS = {
     "write_preset": "Experimental single-slot attempt of three planned frames; "
     "an incomplete write may be resubmitted identically, at most "
     f"{MAX_ATTEMPTS} attempts per machine and slot. Optional backup is not "
-    "readback.",
+    "readback. Leaves the machine in pro mode.",
     "write_presets": "Write A/B/C once each; requires caller-supplied backups. "
     "Refused over an incomplete write_preset; supersedes each slot's recorded "
-    "write before its first frame for that slot.",
+    "write before its first frame for that slot. Leaves the machine in pro mode.",
     "set_water_source": "Select tank/tap source by the existing validated argument "
     "contract.",
     "read_pour_radius": "Query current raw value; also prepares/home the machine.",
@@ -283,6 +282,8 @@ class MachineCommandAPI:
     worker_started: asyncio.Event | None
     prepared: dict[str, Any] | None
     _prepared_plan: dict[str, Any] | None
+    session: Interaction | None
+    recorder: Recorder | None
     # The running preset write attempt, reported as in progress, not interrupted.
     preset_attempt: str | None = None
 
@@ -364,11 +365,13 @@ class MachineCommandAPI:
                 ledger = await asyncio.to_thread(self._preset_ledger)
                 if command == "write_preset":
                     preset = values["preset"]
-                    current = ledger.get(preset.slot)
-                    admitted = (current, *admit(current, preset.to_dict(), acknowledge))
+                    admitted = admit(
+                        ledger.get(preset.slot), preset.to_dict(), acknowledge
+                    )
                 else:
                     slots = [preset.slot for preset in values["presets"]]
                     superseded = supersede(ledger, slots)
+            opened = self.session is None
             await self._connect(allow_untested)
             recorder, session = self._recorder, self._session
             recorder.emit(
@@ -445,6 +448,8 @@ class MachineCommandAPI:
                         # The outcome is committed before the guard admits a reader.
                         with suppress(Exception):
                             await wait_cleanup(asyncio.ensure_future(recorder.flush()))
+                        if opened:
+                            await self._close_session(session, recorder)
                     raise
                 finally:
                     session._before_slot_write = None
@@ -490,11 +495,18 @@ class MachineCommandAPI:
             "writes": [write for key, write in writes.items() if slot in (None, key)],
         }
 
+    async def _close_session(self, session: Interaction, recorder: Recorder) -> None:
+        self.session = self.recorder = None
+        with suppress(Exception):
+            try:
+                await session.disconnect()
+            finally:
+                await recorder.close()
+
     def _begin_preset_write(
         self,
         preset: SavedPreset,
         acknowledge: str | None,
-        current: dict[str, Any] | None,
         write_id: str | None,
         repeat: bool,
     ) -> dict[str, Any]:
@@ -506,18 +518,15 @@ class MachineCommandAPI:
                 "Nothing was sent."
             )
         if repeat:
-            # Repeat only on a current idle report from this connection.
             state = session.snapshot()["fields"].get("machine_state_code") or {}
-            if not state.get("available") or state.get("value") not in (
-                *IDLE_STATES,
-                NO_WATER_STATE,
-            ):
-                raise PresetWriteRefused(
+            if not state.get("available") or state.get("value") not in IDLE_STATES:
+                raise BusyError(
                     "Repeating a preset write needs a current idle report from "
-                    "this connection; nothing was sent. Check the machine, "
-                    "disconnect and resubmit without a separate connect.",
-                    current,
+                    "this connection; nothing was sent. Check the machine (for "
+                    "example its water), disconnect if still connected and "
+                    "resubmit without a separate connect."
                 )
+            session._require_preset_water()
         attempt = {
             "write_id": write_id or uuid.uuid4().hex,
             "attempt_id": uuid.uuid4().hex,

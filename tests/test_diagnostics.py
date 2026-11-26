@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError, URLError
 
+from tests import frames
 from tests.machine import Machine
 from tests.test_facade import run_cli
 from tests.test_skills import command_problems
@@ -794,6 +795,35 @@ class AsyncSurfaceDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diag["code"], "XB_RESPONSE_TOO_LARGE")
         self.assertEqual(diag["location"]["operation_id"], "op-42")
         self.assertIn("Never start again", diag["fix"])
+
+    async def test_a_repeat_without_an_idle_report_stays_busy_remotely(self):
+        preset = {"slot": "C", "payload_hex": "6e6577", "flags": 4}
+        self.machine.studio.reject_preset_attempts = 1
+        first = await self.app.machine.command(
+            "write_preset", {"preset": preset}, allow_control=True, allow_untested=True
+        )
+        self.assertEqual(first["attempt"]["state"], "retryable")
+        await self.app.machine.disconnect()
+        no_water = frames.reply(8023, frames.u32(0x0C))
+        self.machine.overrides[8100] = lambda p: [*self.machine.studio(p), no_water]
+        with self.assertRaises(RemoteError) as caught:
+            await call(
+                self.socket,
+                "machine_command",
+                {
+                    "command": "write_preset",
+                    "params": {"preset": preset},
+                    "allow_control": True,
+                    "allow_untested": True,
+                },
+            )
+        detail = caught.exception.detail
+        self.assertEqual(detail["code"], "busy")
+        self.assertEqual(detail["diagnostic"]["code"], "XB_MACHINE_BUSY")
+        self.assertIn("current idle report", detail["message"])
+        self.assertIn("current idle report", detail["diagnostic"]["cause"])
+        writes = await call(self.socket, "machine_preset_writes", {"slot": "C"})
+        self.assertTrue(writes["writes"][0]["retry_allowed"])
 
     async def test_failed_preset_write_carries_diagnostic_and_cli_human_display(self):
         self.machine.studio.silent.add(11510)

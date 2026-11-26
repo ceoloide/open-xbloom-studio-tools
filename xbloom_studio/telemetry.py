@@ -231,8 +231,8 @@ def decode_values(packet: Packet) -> list[Value]:
     if packet.command == 40522:
         code = _uint32(payload, "Water fault")
         values: list[Value] = [("water_fault_code", code, None, DECODED)]
-        if code == 0:
-            values.append(("water_sufficient", False, None, DECODED))
+        if code in (0, 1):
+            values.append(("water_sufficient", code == 1, None, DECODED))
         return values
     if packet.command == 8023:
         return [("machine_state_code", _uint32(payload, "State"), None, RAW_CODE)]

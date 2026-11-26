@@ -738,6 +738,18 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SessionError, "Water sufficiency"):
                 await session.start_water(volume_ml=10)
 
+    async def test_water_ok_report_during_a_pour_is_not_a_fault(self):
+        m = Machine()
+        async with interaction(m) as session:
+            op = await session.start_water(volume_ml=10)
+            await transmitted(m, 4506)
+            m.emit(40522, u32(1))
+            m.emit(40511)
+            m.state(1)
+            result = await asyncio.wait_for(op.wait(), 2)
+            self.assertEqual(result["status"], "completed")
+            self.assertFalse(session.get_state()["recovery_required"])
+
     async def test_malformed_event_during_operation_is_not_lifecycle_data(self):
         m = Machine()
         async with interaction(m) as session:
@@ -936,6 +948,19 @@ class PreparedRecipeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 session.get_state()["last_preparation"]["reason"], "machine_fault"
             )
+
+    async def test_water_ok_after_low_water_starts_the_prepared_recipe(self):
+        m = Machine(auto_complete=True)
+        async with interaction(m) as session:
+            prepared = await session.upload_recipe(EncodedRecipe(b"x", 10))
+            m.emit(40522, u32(0))
+            m.emit(40522, u32(1))
+            state = session.get_state()
+            self.assertIsNotNone(state["prepared"])
+            self.assertFalse(state["recovery_required"])
+            op = await session.start_prepared(prepared["token"])
+            result = await asyncio.wait_for(op.wait(), 2)
+            self.assertEqual(result["status"], "completed")
 
     async def test_context_change_during_upload_stops_before_next_frame(self):
         m = Machine()
@@ -1968,6 +1993,7 @@ class LifecycleRoundFourTests(unittest.IsolatedAsyncioTestCase):
             (lambda m: (m.emit(40522, u32(3)), m.emit(8015, _units(7))), True),
             (lambda m: (m.emit(8015, _units(7)), m.emit(40522, u32(3))), True),
             (lambda m: (m.emit(40522, b"\1"), m.emit(40521, identity_block())), True),
+            (lambda m: (m.emit(40522, b""), m.emit(40521, identity_block())), True),
             (lambda m: (m.emit(40522, u32(0)), m.emit(8015, _units(7))), False),
             (lambda m: (m.emit(40522, u32(0)), m.emit(40521, identity_block())), False),
         ):

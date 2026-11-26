@@ -129,7 +129,9 @@ available.
 Preset writes are experimental. A backup of a slot's previous contents is
 optional for `write_preset` and required for `write_presets`; use only
 contents the user supplies, never ones built from local aliases. Nothing
-reads a preset back: even a success reports `readback_verified=false`.
+reads a preset back: even a success reports `readback_verified=false`. A
+preset write switches the machine to pro mode while preparing and leaves it
+there; `set_mode` with `recipes` switches back if the user wants.
 
 One `write_preset` call is one attempt of three planned frames. Its result's
 `attempt` field gives the `outcome` (`saved`, `saved_cleanup_failed`,
@@ -141,9 +143,10 @@ arrived while the outcome was being recorded), `attempts_used`,
 user asked for, call `machine_disconnect`, then submit `write_preset` again
 with exactly the same slot, flags and payload, without a separate
 `machine_connect`: it connects itself and repeats only on an idle report
-under 5 s old from that connection. Never recompile or change the contents
-to retry. The daemon allows 3 attempts per machine and slot, `no_preset_frame`
-ones included. Stop and
+under 5 s old from that connection. A machine without water is not idle: a
+write, first or repeated, is then refused as busy, sends nothing and uses no
+attempt. Never recompile or change the contents to retry. The daemon allows
+3 attempts per machine and slot, `no_preset_frame` ones included. Stop and
 ask the user once a save was observed, an attempt was cancelled or the
 attempts are used up. Only after their direction, pass
 `acknowledge_incomplete` with the reported `write_id` to start a new write. A

@@ -474,7 +474,7 @@
       "hex": "0x9e4a",
       "direction": "incoming",
       "function": 7,
-      "summary": "Uint32 water fault code; zero reports insufficient water."
+      "summary": "Uint32 water fault code; zero reports insufficient water, one sufficient water."
     },
     {
       "name": "machine_state",

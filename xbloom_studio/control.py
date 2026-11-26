@@ -48,13 +48,8 @@ MOTION_STATES = (0x22, 0x23)
 SCALE_STATES = (4, 5)
 CONTEXT_STATES = (1, 0x0A, 0x41, 0x24, 4, 5)
 FAULT_EVENTS = (40517, 40522, 8203, 8204)
-# Keys of Interaction._seen: (command, None), (8023, state) for states, and
-# the synthetic keys below.
 SeenKey = tuple[int, "int | None"]
 FAULT_KEYS: tuple[SeenKey, ...] = tuple((code, None) for code in FAULT_EVENTS)
-# Synthetic keys. A water report is low water only with the known zero code;
-# any other 40522 is an actionable fault, kept apart so that the ordinary
-# low-water refusal never hides it and later benign telemetry never clears it.
 LOW_WATER: SeenKey = (40522, 0)
 WATER_FAULT: SeenKey = (40522, -1)
 # The latest decoded state code, whatever its value, and the latest one that
@@ -110,6 +105,9 @@ PAUSE_RESUME_CODES = {
     "tea": (40518, 40524),
 }
 PATTERNS = {"center": 0, "ring": 1, "spiral": 2}
+# Function 2 commands the machine refuses with a non-empty report (marker
+# 0xC1) instead of its 0xC2 acknowledgment, as V12.0D.500 refuses 11510.
+REFUSING_COMMANDS = frozenset({11510})
 CALIBRATED_POSITION = struct.pack("<I", 85)
 # The xDripper reference cup limits of the one hardware-observed upload profile.
 VALIDATED_UPLOAD_CUP_LIMITS = (90, 110)
@@ -222,10 +220,6 @@ class EncodedRecipe:
         return struct.pack("<ffI", self.bypass_ml, temperature, int(self.dose_g))
 
 
-def _deque_256() -> deque[Any]:
-    return deque(maxlen=256)
-
-
 @dataclass
 class Operation:
     """One operation. Waiting does not own a command lock or release Bluetooth."""
@@ -243,7 +237,6 @@ class Operation:
     pending_user_action: str | None = None
     last_machine_event: dict[str, Any] | None = None
     _task: asyncio.Task[None] | None = field(default=None, repr=False)
-    _events: deque[tuple[int, bytes]] = field(default_factory=_deque_256, repr=False)
     _armed: bool = field(default=False, repr=False)
     _stop_requested: bool = field(default=False, repr=False)
     _paused: bool = field(default=False, repr=False)
@@ -328,6 +321,16 @@ def _confirmed(future: asyncio.Future[Packet]) -> bool:
 
 def _known_low_water(payload: bytes) -> bool:
     return len(payload) >= 4 and int.from_bytes(payload[:4], "little") == 0
+
+
+def _known_water_ok(payload: bytes) -> bool:
+    return len(payload) >= 4 and int.from_bytes(payload[:4], "little") == 1
+
+
+def _is_preparation_water_fault(payload: bytes, status: str) -> bool:
+    if _known_water_ok(payload):
+        return False
+    return not (_known_low_water(payload) and status in ("uploading", "prepared"))
 
 
 async def _drain(task: asyncio.Task[None]) -> bool:
@@ -505,9 +508,17 @@ class Interaction(MachineControls, ReadOnlyClient):
             return
         if self._waiter is not None:
             (code, marker, expected_payload), future, progress = self._waiter
+            acknowledged = packet.marker == marker and (
+                expected_payload is None or packet.payload == expected_payload
+            )
+            refused = (
+                code in REFUSING_COMMANDS
+                and packet.marker == 0xC1
+                and packet.payload != b""
+            )
             if (
-                (packet.command, packet.marker) == (code, marker)
-                and (expected_payload is None or packet.payload == expected_payload)
+                packet.command == code
+                and (acknowledged or refused)
                 and not future.done()
                 # Judged by the clock at receipt: an ACK after its deadline is
                 # never accepted, however late cleanup inspects the future.
@@ -527,7 +538,9 @@ class Interaction(MachineControls, ReadOnlyClient):
         if self._prepared is not None:
             self._check_preparation(packet)
         self._event_revision += 1
-        self._seen[(packet.command, None)] = self._event_revision
+        water_ok = packet.command == 40522 and _known_water_ok(packet.payload)
+        if not water_ok:
+            self._seen[(packet.command, None)] = self._event_revision
         if packet.command == 8023 and len(packet.payload) >= 4:
             state = int.from_bytes(packet.payload[:4], "little")
             self._seen[(8023, state)] = self._event_revision
@@ -536,7 +549,7 @@ class Interaction(MachineControls, ReadOnlyClient):
                 self._seen[STATE_AT_REST] = self._event_revision
         if packet.command == 40521 and self._identity_water is False:
             self._seen[LOW_WATER] = self._event_revision
-        if packet.command == 40522:
+        if packet.command == 40522 and not water_ok:
             water = LOW_WATER if _known_low_water(packet.payload) else WATER_FAULT
             self._seen[water] = self._event_revision
         if packet.command == 40526 and packet.payload == CALIBRATED_POSITION:
@@ -580,14 +593,10 @@ class Interaction(MachineControls, ReadOnlyClient):
         assert self._prepared is not None
         code, payload = packet.command, packet.payload
         motion = code in (9003, 9005, 40502, 40520)
-        # Sufficient water is a prerequisite for execution, not for storing an
-        # unexecuted recipe. Keep its reservation so it can be started after
-        # refill; start_prepared checks water again before sending.
-        known_low_water = code == 40522 and _known_low_water(payload)
-        low_water_fault = code == 40522 and not (
-            known_low_water and self._prepared["status"] in ("uploading", "prepared")
+        water_fault = code == 40522 and _is_preparation_water_fault(
+            payload, self._prepared["status"]
         )
-        fault = code in (40517, 8203, 8204) or low_water_fault
+        fault = code in (40517, 8203, 8204) or water_fault
         context = code in (8111, 9000, 9001, 9002, 9004, 9006, 9008)
         if code == 8023 and len(payload) >= 4:
             state = int.from_bytes(payload[:4], "little")
@@ -612,7 +621,6 @@ class Interaction(MachineControls, ReadOnlyClient):
             "command": code,
             "payload": payload.hex(),
         }
-        op._events.append((code, payload))
         op.last_machine_event = event
         try:
             decoded = decode_event(packet)
@@ -761,6 +769,15 @@ class Interaction(MachineControls, ReadOnlyClient):
             raise BusyError(
                 "Machine has not reported a recognized idle/completed state"
             )
+
+    def _require_preset_water(self) -> None:
+        """Refuse on observed low water; V12.0D.500 refuses 11510 without it."""
+        water = self.state.observations.get("water_sufficient")
+        state = self.state.observations.get("machine_state_code")
+        if (water is not None and water.value is False) or (
+            state is not None and state.value == NO_WATER_STATE
+        ):
+            raise BusyError("Machine reports insufficient water for a preset write")
 
     def _require_quiescent(self, *, allow_prepared: bool = False) -> None:
         self._require_session()
@@ -1398,15 +1415,11 @@ class Interaction(MachineControls, ReadOnlyClient):
             raise BusyError("Machine reported motion before start; not sent")
 
     def _completed(self, op: Operation) -> bool:
-        events = list(op._events)
         if op.protocol_error is not None:
             raise ProtocolCommandError(
                 op.protocol_error, op.protocol_error.get("pending_command")
             )
-        if (
-            any(code in FAULT_EVENTS for code, _ in events)
-            or self._last(FAULT_KEYS) > op._since
-        ):
+        if self._last(FAULT_KEYS) > op._since:
             raise SessionError("Machine reported a fault; inspect last machine event")
         # Only the latest qualifying completion counts, and only while no
         # relevant motion is newer: superseded completion neither ends the

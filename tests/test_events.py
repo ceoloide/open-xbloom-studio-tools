@@ -172,6 +172,12 @@ class TelemetryTests(unittest.TestCase):
         apply(state, 40522, u32(0))
         self.assertIs(state.observations["water_sufficient"].value, False)
 
+    def test_water_ok_code_reports_sufficient_water(self):
+        state = DeviceState()
+        apply(state, 40522, u32(1))
+        self.assertIs(state.observations["water_sufficient"].value, True)
+        self.assertEqual(state.observations["water_fault_code"].value, 1)
+
     def test_settings_events_become_fields(self):
         state = DeviceState()
         apply(state, 8015, u32(2) + u32(1) + u32(1))
