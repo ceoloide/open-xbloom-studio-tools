@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+import gc
+import inspect
 import io
 import json
 import re
@@ -267,128 +270,222 @@ class ExcerptAndPointerTests(unittest.TestCase):
         self.assertIsNone(extract_json_excerpt("{}", 5, 1))
 
 
+def _known_error_cases(
+    test: unittest.TestCase,
+) -> list[tuple[BaseException, str, str]]:
+    recipe_err = RecipeValidationError(check_recipe({"name": "", "steps": []}))
+    cmd_err = CommandValidationError(
+        [{"path": "/params/level", "message": "out of range", "allowed": {}}]
+    )
+    http_err = HTTPError("https://example.com", 502, "bad", None, None)
+    test.addCleanup(http_err.close)
+    return [
+        (recipe_err, "validation_error", "XB_RECIPE_VALIDATION"),
+        (cmd_err, "validation_error", "XB_COMMAND_VALIDATION"),
+        (
+            PresetWriteError("incomplete", {"slot": "A", "outcome": "unconfirmed"}),
+            "preset_write_incomplete",
+            "XB_PRESET_WRITE_INCOMPLETE",
+        ),
+        (
+            PresetWriteRefused(
+                "refused",
+                {
+                    "write_id": "w1",
+                    "preset": {"slot": "B"},
+                    "state": "exhausted",
+                    "attempts_used": 3,
+                    "max_attempts": 3,
+                    "retry_allowed": False,
+                },
+            ),
+            "conflict",
+            "XB_PRESET_WRITE_REFUSED",
+        ),
+        (
+            UntestedOperationError("needs opt-in"),
+            "experimental_required",
+            "XB_EXPERIMENTAL_REQUIRED",
+        ),
+        (
+            ProtocolCommandError({"kind": "fault", "value": 7}, 8100),
+            "machine_protocol_error",
+            "XB_MACHINE_PROTOCOL_ERROR",
+        ),
+        (LeaseBusyError("owned"), "busy", "XB_OWNER_LEASE_BUSY"),
+        (
+            LeaseDirectoryError("bad mode"),
+            "permission_required",
+            "XB_DIRECTORY_PERMISSION_REQUIRED",
+        ),
+        (
+            SocketDirectoryError("bad dir"),
+            "permission_required",
+            "XB_DIRECTORY_PERMISSION_REQUIRED",
+        ),
+        (
+            SocketPathError("too long"),
+            "invalid_argument",
+            "XB_SOCKET_PATH_TOO_LONG",
+        ),
+        (BusyError("busy"), "busy", "XB_MACHINE_BUSY"),
+        (
+            InsufficientWaterError("low water"),
+            "busy",
+            "XB_MACHINE_WATER_INSUFFICIENT",
+        ),
+        (IdleStateRequiredError("no idle"), "busy", "XB_MACHINE_NOT_IDLE"),
+        (ConflictError("changed"), "conflict", "XB_CONFLICT"),
+        (
+            NotFoundError("Recipe not found", resource="recipe"),
+            "not_found",
+            "XB_RECIPE_NOT_FOUND",
+        ),
+        (
+            NotFoundError("Operation not found", resource="operation"),
+            "not_found",
+            "XB_OPERATION_NOT_FOUND",
+        ),
+        (
+            NotFoundError("Import not found", resource="import"),
+            "not_found",
+            "XB_IMPORT_NOT_FOUND",
+        ),
+        (ProviderError("bad"), "provider_error", "XB_PROVIDER_ERROR"),
+        (http_err, "provider_error", "XB_PROVIDER_ERROR"),
+        (URLError("offline"), "provider_unavailable", "XB_PROVIDER_UNAVAILABLE"),
+        (
+            SessionError("dropped"),
+            "connection_unavailable",
+            "XB_SESSION_UNAVAILABLE",
+        ),
+        (FileExistsError("exists"), "conflict", "XB_SOCKET_EXISTS"),
+        (
+            FileNotFoundError("no sock"),
+            "connection_unavailable",
+            "XB_DAEMON_UNAVAILABLE",
+        ),
+        (
+            TimeoutError("timed out"),
+            "connection_unavailable",
+            "XB_TRANSPORT_UNCERTAIN",
+        ),
+        (
+            json.JSONDecodeError("Expecting value", "{", 1),
+            "invalid_argument",
+            "XB_JSON_SYNTAX",
+        ),
+        (
+            ControlPermissionError("needs allow_control"),
+            "permission_required",
+            "XB_CONTROL_PERMISSION_REQUIRED",
+        ),
+        (
+            ExperimentalOptInError("needs allow_untested"),
+            "experimental_required",
+            "XB_EXPERIMENTAL_REQUIRED",
+        ),
+        (
+            ConnectionRefusedError("refused"),
+            "connection_unavailable",
+            "XB_DAEMON_UNAVAILABLE",
+        ),
+        (ConnectionError("reset"), "connection_unavailable", "XB_TRANSPORT_UNCERTAIN"),
+        (
+            LocalJsonSyntaxError("Expecting value", "{", 1, display_path="a.json"),
+            "invalid_argument",
+            "XB_JSON_SYNTAX",
+        ),
+        (TypeError("bad type"), "invalid_argument", "XB_INVALID_ARGUMENT"),
+        (ValueError("bad arg"), "invalid_argument", "XB_INVALID_ARGUMENT"),
+        (
+            RuntimeError("internal secret"),
+            "internal_error",
+            "XB_INTERNAL_ERROR",
+        ),
+    ]
+
+
+# RemoteError wraps a peer's envelope. InputFileReadError reads a local CLI file,
+# and a peer is never trusted with its local-only XB_INPUT_READ_FAILED.
+_LOCAL_ONLY_ERRORS = frozenset({"RemoteError", "InputFileReadError"})
+
+
+def _matched_names(node: ast.expr) -> list[str]:
+    items = node.elts if isinstance(node, ast.Tuple) else [node]
+    return [ast.unparse(item).rsplit(".", 1)[-1] for item in items]
+
+
+def _remote_capable_error_names() -> set[str]:
+    names = {cls.__name__ for cls in BusyError.__subclasses__()}
+    for node in ast.walk(ast.parse(inspect.getsource(error_detail))):
+        if (
+            isinstance(node, ast.Call)
+            and ast.unparse(node.func) == "isinstance"
+            and ast.unparse(node.args[0]) == "exc"
+        ):
+            names.update(_matched_names(node.args[1]))
+        elif isinstance(node, ast.Compare) and ast.unparse(node.left) == "type(exc)":
+            for comparator in node.comparators:
+                names.update(_matched_names(comparator))
+    return names - _LOCAL_ONLY_ERRORS
+
+
+def _remote_parity_problems(
+    cases: list[tuple[BaseException, str, str]], required: set[str]
+) -> list[str]:
+    sampled = {type(exc).__name__ for exc, _, _ in cases}
+    problems = [f"{name}: no sample" for name in sorted(required - sampled)]
+    for exc, _, _ in cases:
+        local = error_detail(exc, log_unexpected=False)
+        bare = {key: value for key, value in local.items() if key != "diagnostic"}
+        remote = error_detail(RemoteError(bare), log_unexpected=False)
+        local_code = local["diagnostic"]["code"]
+        remote_code = remote["diagnostic"]["code"]
+        if remote_code != local_code:
+            problems.append(
+                f"{type(exc).__name__}: local {local_code}, remote {remote_code}"
+            )
+    return problems
+
+
 class ErrorContractAndSanitizationTests(unittest.TestCase):
-    def test_every_known_exception_maps_to_expected_diagnostic_code(self):
-        recipe_err = RecipeValidationError(check_recipe({"name": "", "steps": []}))
-        cmd_err = CommandValidationError(
-            [{"path": "/params/level", "message": "out of range", "allowed": {}}]
+    def test_every_error_detail_exception_keeps_its_code_without_remote_diagnostic(
+        self,
+    ):
+        problems = _remote_parity_problems(
+            _known_error_cases(self), _remote_capable_error_names()
         )
-        http_err = HTTPError("https://example.com", 502, "bad", None, None)
-        self.addCleanup(http_err.close)
-        cases = [
-            (recipe_err, "validation_error", "XB_RECIPE_VALIDATION"),
-            (cmd_err, "validation_error", "XB_COMMAND_VALIDATION"),
-            (
-                PresetWriteError("incomplete", {"slot": "A", "outcome": "unconfirmed"}),
-                "preset_write_incomplete",
-                "XB_PRESET_WRITE_INCOMPLETE",
-            ),
-            (
-                PresetWriteRefused(
-                    "refused",
-                    {
-                        "write_id": "w1",
-                        "preset": {"slot": "B"},
-                        "state": "exhausted",
-                        "attempts_used": 3,
-                        "max_attempts": 3,
-                        "retry_allowed": False,
-                    },
-                ),
-                "conflict",
-                "XB_PRESET_WRITE_REFUSED",
-            ),
-            (
-                UntestedOperationError("needs opt-in"),
-                "experimental_required",
-                "XB_EXPERIMENTAL_REQUIRED",
-            ),
-            (
-                ProtocolCommandError({"kind": "fault", "value": 7}, 8100),
-                "machine_protocol_error",
-                "XB_MACHINE_PROTOCOL_ERROR",
-            ),
-            (LeaseBusyError("owned"), "busy", "XB_OWNER_LEASE_BUSY"),
-            (
-                LeaseDirectoryError("bad mode"),
-                "permission_required",
-                "XB_DIRECTORY_PERMISSION_REQUIRED",
-            ),
-            (
-                SocketDirectoryError("bad dir"),
-                "permission_required",
-                "XB_DIRECTORY_PERMISSION_REQUIRED",
-            ),
-            (
-                SocketPathError("too long"),
-                "invalid_argument",
-                "XB_SOCKET_PATH_TOO_LONG",
-            ),
-            (BusyError("busy"), "busy", "XB_MACHINE_BUSY"),
-            (
-                InsufficientWaterError("low water"),
-                "busy",
-                "XB_MACHINE_WATER_INSUFFICIENT",
-            ),
-            (IdleStateRequiredError("no idle"), "busy", "XB_MACHINE_NOT_IDLE"),
-            (ConflictError("changed"), "conflict", "XB_CONFLICT"),
-            (
-                NotFoundError("Recipe not found", resource="recipe"),
-                "not_found",
-                "XB_RECIPE_NOT_FOUND",
-            ),
-            (
-                NotFoundError("Operation not found", resource="operation"),
-                "not_found",
-                "XB_OPERATION_NOT_FOUND",
-            ),
-            (
-                NotFoundError("Import not found", resource="import"),
-                "not_found",
-                "XB_IMPORT_NOT_FOUND",
-            ),
-            (ProviderError("bad"), "provider_error", "XB_PROVIDER_ERROR"),
-            (http_err, "provider_error", "XB_PROVIDER_ERROR"),
-            (URLError("offline"), "provider_unavailable", "XB_PROVIDER_UNAVAILABLE"),
-            (
-                SessionError("dropped"),
-                "connection_unavailable",
-                "XB_SESSION_UNAVAILABLE",
-            ),
-            (FileExistsError("exists"), "conflict", "XB_SOCKET_EXISTS"),
-            (
-                FileNotFoundError("no sock"),
-                "connection_unavailable",
-                "XB_DAEMON_UNAVAILABLE",
-            ),
-            (
-                TimeoutError("timed out"),
-                "connection_unavailable",
-                "XB_TRANSPORT_UNCERTAIN",
-            ),
-            (
-                json.JSONDecodeError("Expecting value", "{", 1),
-                "invalid_argument",
-                "XB_JSON_SYNTAX",
-            ),
-            (
-                ControlPermissionError("needs allow_control"),
-                "permission_required",
-                "XB_CONTROL_PERMISSION_REQUIRED",
-            ),
-            (
-                ExperimentalOptInError("needs allow_untested"),
-                "experimental_required",
-                "XB_EXPERIMENTAL_REQUIRED",
-            ),
-            (ValueError("bad arg"), "invalid_argument", "XB_INVALID_ARGUMENT"),
-            (
-                RuntimeError("internal secret"),
-                "internal_error",
-                "XB_INTERNAL_ERROR",
-            ),
-        ]
-        for exc, error_code, diag_code in cases:
+        self.assertEqual(problems, [])
+
+    def test_remote_parity_guard_reports_missing_samples_and_inference_drift(self):
+        cases = _known_error_cases(self)
+        required = _remote_capable_error_names()
+        water = [case for case in cases if type(case[0]) is InsufficientWaterError]
+        others = [case for case in cases if case not in water]
+        self.assertIn(
+            "InsufficientWaterError: no sample",
+            _remote_parity_problems(others, required),
+        )
+        with patch.object(diagnostics, "_infer_code", return_value="XB_MACHINE_BUSY"):
+            self.assertIn(
+                "InsufficientWaterError: local XB_MACHINE_WATER_INSUFFICIENT, "
+                "remote XB_MACHINE_BUSY",
+                _remote_parity_problems(water, required),
+            )
+
+        class LowBeansError(BusyError):
+            pass
+
+        try:
+            self.assertIn("LowBeansError", _remote_capable_error_names())
+        finally:
+            del LowBeansError
+            gc.collect()
+        self.assertNotIn("LowBeansError", _remote_capable_error_names())
+
+    def test_every_known_exception_maps_to_expected_diagnostic_code(self):
+        for exc, error_code, diag_code in _known_error_cases(self):
             with self.subTest(exc=type(exc).__name__, diag_code=diag_code):
                 detail = error_detail(exc, log_unexpected=False)
                 self.assertEqual(detail["code"], error_code)
