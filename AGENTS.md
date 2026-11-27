@@ -46,28 +46,16 @@ uv run --locked ruff format .
 
 ### Presubmit
 
-Steps, in order: lockfile, format, lint, types, publication, tests,
-coverage-report (needs tests), coverage-gate (needs coverage-report), build,
-distribution (needs build). A failing step does not stop the run; a step whose
-producer failed is `skipped (needs X)`. The run ends with a table, a `rerun:`
-line per failure and a `fix:` line where one exists. `--fast` and `--only` are
-exclusive; `--only` adds the steps the named ones need. With a stale lockfile
-`uv run --locked` stops before presubmit starts, so the lockfile rerun line
-uses `uv run --frozen`. CI (`.github/workflows/ci.yml`) runs the full
-presubmit on Python 3.14 and 3.15.
+With a stale lockfile `uv run --locked` stops before presubmit starts, so the
+lockfile `rerun:` line uses `uv run --frozen`. CI (`.github/workflows/ci.yml`)
+runs the full presubmit on Python 3.14 and 3.15.
 
 ### Test runner
 
-`scripts.run_tests` runs each module in its own process and private root, at
-most `--jobs` at once (default min(4, CPUs)). A module's result is `ok`,
-`FAIL`, `EMPTY` (no tests ran), `NOISE` (a line that is not unittest's own) or
-`TIMEOUT` (300 s; it dumps every thread's stack, then kills the module's
-process group). A failed module gets a `rerun:` line: the failed test IDs
-where it can read them, else the module. On Linux the runner adopts orphaned
-descendants and kills any left, such as one in its own session, when the run
-ends. Known limits: off Linux those outlive the run; a runner killed by
-SIGKILL, SIGHUP or SIGQUIT leaves its workers and run root (`xbs-r-*` under
-/dev/shm or /tmp) to delete.
+`scripts.run_tests` runs each module in its own process and private root, and
+prints a `rerun:` line with the failed test IDs or module. Off Linux, orphaned
+descendants outlive the run; a runner killed by SIGKILL, SIGHUP or SIGQUIT
+leaves its workers and run root (`xbs-r-*` under /dev/shm or /tmp) to delete.
 
 ## Rules enforced by a check
 
@@ -95,6 +83,10 @@ SIGKILL, SIGHUP or SIGQUIT leaves its workers and run root (`xbs-r-*` under
   (`tests.test_skills`); the built sdist and wheel have exactly the expected
   files and pass an installed probe (`scripts.check_dist`).
 - MCP tool inputs match `tests/contracts/mcp_tools.json` (`tests.test_contracts`).
+- Diagnostics: every `XB_*` code in `xbloom_studio.diagnostic_catalog` has docs,
+  repair anchors and parseable commands in `docs/diagnostics.md`, and every
+  exception `xbloom_studio.errors` maps keeps its code through remote inference
+  when a peer sends no diagnostic (`tests.test_diagnostics`).
 
 ## Policy no check enforces
 
@@ -107,6 +99,11 @@ SIGKILL, SIGHUP or SIGQUIT leaves its workers and run root (`xbs-r-*` under
 - Keep `scripts` at 100 % line and branch coverage, and do not lower the
   package's.
 - Change the MCP golden only on purpose, and explain its diff in the PR body.
+- Errors follow the Solid-style contract in `docs/diagnostics.md` (`code`,
+  `cause`, `location`, `fix`, `docs_url`, `repair_guide`). A failure with its
+  own recovery step, such as low water vs stopping owned work, gets an exception
+  subclass and `XB_*` spec, wired in `xbloom_studio.errors` and in remote
+  inference in `xbloom_studio.diagnostics`. Never trust a peer's `fix`.
 
 ## Environment
 

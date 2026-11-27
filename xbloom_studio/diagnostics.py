@@ -835,8 +835,12 @@ def _infer_code(
         if error_type == "FileExistsError":
             return "XB_SOCKET_EXISTS"
         return "XB_CONFLICT"
-    if error_code == "connection_unavailable" and error_type == "SessionError":
-        return "XB_SESSION_UNAVAILABLE"
+    if error_code == "connection_unavailable":
+        return {
+            "SessionError": "XB_SESSION_UNAVAILABLE",
+            "FileNotFoundError": "XB_DAEMON_UNAVAILABLE",
+            "ConnectionRefusedError": "XB_DAEMON_UNAVAILABLE",
+        }.get(error_type or "", "XB_TRANSPORT_UNCERTAIN")
     return FALLBACK_BY_ERROR_CODE.get(error_code, "XB_INTERNAL_ERROR")
 
 
