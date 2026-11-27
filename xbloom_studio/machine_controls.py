@@ -57,6 +57,10 @@ class PresetWriteError(SessionError):
         self.result = result
 
 
+class PresetModeRestoreError(PresetWriteError):
+    """A save was observed, but the switch back to recipes mode was not."""
+
+
 def preset_outcome(result: dict[str, Any], exc: BaseException | None) -> str:
     """Classify one write attempt from its evidence; never a content readback."""
     if result["saved_observed"]:
@@ -734,6 +738,12 @@ class MachineControls:
                 result["outcome"] = preset_outcome(result, exc)
                 if isinstance(exc, asyncio.CancelledError):
                     raise exc from exc.__cause__
+                if result["saved_observed"] and result["acknowledged_mode"] == "pro":
+                    raise PresetModeRestoreError(
+                        "Preset save observed, but the switch back to recipes mode "
+                        "was not acknowledged",
+                        result,
+                    ) from exc
                 raise PresetWriteError(
                     "Preset write incomplete; inspect result and backup before "
                     "recovery in a fresh interaction",

@@ -148,6 +148,13 @@ _SAFE_PREPARED_FALLBACK_RECOVERY = (
 )
 
 
+_PRESET_WRITE_CODES = (
+    "XB_PRESET_WRITE_REFUSED",
+    "XB_PRESET_WRITE_INCOMPLETE",
+    "XB_PRESET_MODE_NOT_RESTORED",
+)
+
+
 def request_provenance(
     method: str | None, params: Mapping[str, Any] | None
 ) -> tuple[
@@ -436,12 +443,14 @@ def _rebuild_remote_diagnostic(
                 None,
             )
 
-    if diag_code in ("XB_PRESET_WRITE_REFUSED", "XB_PRESET_WRITE_INCOMPLETE"):
+    if diag_code in _PRESET_WRITE_CODES:
         refused = diag_code == "XB_PRESET_WRITE_REFUSED"
         policy = _preset_write_error_policy(details, refused=refused, context=context)
+        written = details.get("preset_write") if isinstance(details, Mapping) else None
         return (
             preset_write_diagnostic(
                 refused=refused,
+                payload=written if isinstance(written, Mapping) else None,
                 cause=message or CATALOG[diag_code].default_cause,
                 context=context,
                 trusted=False,
@@ -566,10 +575,7 @@ def sanitize_remote_error(
                     filtered["details"] = details_copy
         message_replaced = False
         if policy is not None:
-            is_preset_diag = rebuilt["code"] in (
-                "XB_PRESET_WRITE_REFUSED",
-                "XB_PRESET_WRITE_INCOMPLETE",
-            )
+            is_preset_diag = rebuilt["code"] in _PRESET_WRITE_CODES
             if policy.conflict or policy.saved_cleanup_failed or is_preset_diag:
                 local_cause = (
                     rebuilt["cause"]
@@ -672,6 +678,7 @@ def sanitize_remote_result(
             cleaned["diagnostic"] = preset_write_diagnostic(
                 refused=False,
                 cause=cause,
+                payload=payload,
                 context=context,
                 trusted=False,
                 policy=policy,
@@ -841,6 +848,8 @@ def _infer_code(
             "FileNotFoundError": "XB_DAEMON_UNAVAILABLE",
             "ConnectionRefusedError": "XB_DAEMON_UNAVAILABLE",
         }.get(error_type or "", "XB_TRANSPORT_UNCERTAIN")
+    if error_type == "PresetModeRestoreError":
+        return "XB_PRESET_MODE_NOT_RESTORED"
     return FALLBACK_BY_ERROR_CODE.get(error_code, "XB_INTERNAL_ERROR")
 
 

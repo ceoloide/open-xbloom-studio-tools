@@ -54,6 +54,7 @@ include a canonical `diagnostic` object.
 | [`XB_SOCKET_EXISTS`](#xb_socket_exists) | `conflict` | Daemon socket or destination path already exists | [Agent repair](#xb_socket_exists-agent-repair) |
 | [`XB_PRESET_WRITE_REFUSED`](#xb_preset_write_refused) | `conflict` | Preset write refused by journal policy before sending | [Agent repair](#xb_preset_write_refused-agent-repair) |
 | [`XB_PRESET_WRITE_INCOMPLETE`](#xb_preset_write_incomplete) | `preset_write_incomplete` | Preset write did not confirm completion | [Agent repair](#xb_preset_write_incomplete-agent-repair) |
+| [`XB_PRESET_MODE_NOT_RESTORED`](#xb_preset_mode_not_restored) | `preset_write_incomplete` | Preset saved, machine not switched back to recipes mode | [Agent repair](#xb_preset_mode_not_restored-agent-repair) |
 | [`XB_MACHINE_BUSY`](#xb_machine_busy) | `busy` | Machine already owns active work or preparation | [Agent repair](#xb_machine_busy-agent-repair) |
 | [`XB_MACHINE_WATER_INSUFFICIENT`](#xb_machine_water_insufficient) | `busy` | Machine reports insufficient water; nothing was sent | [Agent repair](#xb_machine_water_insufficient-agent-repair) |
 | [`XB_MACHINE_NOT_IDLE`](#xb_machine_not_idle) | `busy` | Machine has not reported a current idle state; nothing was sent | [Agent repair](#xb_machine_not_idle-agent-repair) |
@@ -255,6 +256,20 @@ include a canonical `diagnostic` object.
 2. Call `machine_preset_writes` (`xbloom-studio machine preset-writes`) and `machine_state` to inspect journaled evidence.
 3. When `attempt.outcome` is `saved_cleanup_failed` (or a save event was observed with `recovery_required: true`), recognize that a save event was observed (not a readback) so do **not** replay the preset write; call `machine_disconnect` (`xbloom-studio machine disconnect`) and inspect `machine_state`, `machine_preset_writes`, and the physical machine before any further control.
 4. Otherwise follow `attempt.next_step`: repeat only an identical single-slot `write_preset` after `machine_disconnect` when `retry_allowed` is `true` and authorized; never auto-retry a batch `write_presets` or roll back automatically.
+5. When `details.acknowledged_mode` is not `recipes`, tell the user the machine may still be in pro mode.
+
+## XB_PRESET_MODE_NOT_RESTORED
+
+- **Machine code:** `preset_write_incomplete`
+- **Meaning:** A preset save event was observed (not a readback), but the machine did not acknowledge the switch back to recipes mode, so it may still be in pro mode.
+- **Location:** Physical preset slot (`A`, `B`, or `C`).
+- **Fix:** Do not write the preset again. Disconnect, check the machine, then switch it to recipes mode there or, if the user agrees, with `set_mode`.
+
+### XB_PRESET_MODE_NOT_RESTORED agent repair
+
+1. Preserve every reported detail, and do **not** replay the preset write: a save event was observed (not a readback).
+2. Call `machine_disconnect` (`xbloom-studio machine disconnect`), then check `machine_state` and the physical machine.
+3. Tell the user the machine may still be in pro mode. They can switch it on the machine, or agree to `machine_command` with `set_mode` and `recipes`.
 
 ## XB_MACHINE_BUSY
 

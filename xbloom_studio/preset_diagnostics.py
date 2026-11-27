@@ -1448,6 +1448,18 @@ def _preset_write_fix(
     return None
 
 
+def _recipes_mode_not_restored(payload: Mapping[str, Any] | None) -> bool:
+    """A save was observed and the last acknowledged mode is still pro.
+
+    Only evidence selects this code; its cause and fix are always local.
+    """
+    return (
+        isinstance(payload, Mapping)
+        and payload.get("saved_observed") is True
+        and payload.get("acknowledged_mode") == "pro"
+    )
+
+
 def preset_write_diagnostic(
     *,
     refused: bool,
@@ -1534,6 +1546,10 @@ def preset_write_diagnostic(
             fix = _SAFE_PRESET_DISCONNECT_RECOVERY
 
         resolved_cause = _untrusted_preset_write_cause(policy, refused=refused)
+        if not (refused or policy.conflict) and _recipes_mode_not_restored(payload):
+            code = "XB_PRESET_MODE_NOT_RESTORED"
+            resolved_cause = CATALOG[code].default_cause
+            fix = CATALOG[code].default_fix
         return build_diagnostic(
             code,
             cause=resolved_cause,
@@ -1661,6 +1677,10 @@ def preset_write_diagnostic(
             f"{cause} (save event observed, but post-save cleanup failed; "
             "session recovery required)"
         )
+    if not refused and _recipes_mode_not_restored(payload):
+        code = "XB_PRESET_MODE_NOT_RESTORED"
+        resolved_cause = CATALOG[code].default_cause
+        local_fix = CATALOG[code].default_fix
     return build_diagnostic(
         code,
         cause=resolved_cause,

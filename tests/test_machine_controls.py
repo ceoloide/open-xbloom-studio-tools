@@ -15,6 +15,7 @@ from xbloom_studio import (
     EncodedTeaRecipe,
     IdleStateRequiredError,
     InsufficientWaterError,
+    PresetModeRestoreError,
     PresetWriteError,
     SavedPreset,
     SessionError,
@@ -851,6 +852,19 @@ class PresetAttemptTests(Base):
         self.assertEqual(result["outcome"], "rejected")
         self.assertIn("not an empty acknowledgment", result["error"])
         self.assertEqual(result["acknowledged_mode"], "pro")
+
+    async def test_a_save_without_the_switch_back_raises_its_own_error(self):
+        m = Machine()
+
+        def mode(packet):
+            return [] if packet.payload == RECIPES else m.studio(packet)
+
+        m.overrides[MODE] = mode
+        async with interaction(m, allow_untested=True, ack_timeout=0.05) as session:
+            with self.assertRaises(PresetModeRestoreError) as caught:
+                await session.write_preset(SavedPreset("A", b"n", 4))
+        self.assertEqual(caught.exception.result["outcome"], "saved_cleanup_failed")
+        self.assertEqual(caught.exception.result["acknowledged_mode"], "pro")
 
     async def test_no_switch_back_while_the_machine_reports_motion(self):
         m = Machine()

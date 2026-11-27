@@ -1207,6 +1207,19 @@ class PresetRetryTests(ServiceCase):
     def journal(self, kind, **data):
         self.store.append(kind, data, device=self.service.device)
 
+    async def test_a_save_without_the_switch_back_names_the_mode_recovery(self):
+        def mode(packet):
+            if packet.payload == bytes.fromhex("91327856"):
+                return []
+            return self.machine.studio(packet)
+
+        self.machine.overrides[11511] = mode
+        result = await self.write()
+        self.assertEqual(result["type"], "PresetModeRestoreError")
+        self.assertEqual(result["diagnostic"]["code"], "XB_PRESET_MODE_NOT_RESTORED")
+        self.assertIn("set_mode", result["diagnostic"]["fix"])
+        self.assertFalse(result["attempt"]["retry_allowed"])
+
     async def test_a_rejected_write_reports_the_switch_back(self):
         self.machine.studio.reject_preset_attempts = 1
         result = await self.write()

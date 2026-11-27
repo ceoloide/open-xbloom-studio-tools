@@ -43,6 +43,7 @@ from xbloom_studio.facade import Application
 from xbloom_studio.machine_controls import (
     ControlPermissionError,
     ExperimentalOptInError,
+    PresetModeRestoreError,
     PresetWriteError,
     UntestedOperationError,
 )
@@ -286,6 +287,13 @@ def _known_error_cases(
             PresetWriteError("incomplete", {"slot": "A", "outcome": "unconfirmed"}),
             "preset_write_incomplete",
             "XB_PRESET_WRITE_INCOMPLETE",
+        ),
+        (
+            PresetModeRestoreError(
+                "saved", {"saved_observed": True, "acknowledged_mode": "pro"}
+            ),
+            "preset_write_incomplete",
+            "XB_PRESET_MODE_NOT_RESTORED",
         ),
         (
             PresetWriteRefused(
@@ -736,6 +744,33 @@ class ErrorContractAndSanitizationTests(unittest.TestCase):
             {"code": "not_found", "message": "Import not found"}
         )
         self.assertEqual(imp_not_found["code"], "XB_IMPORT_NOT_FOUND")
+
+
+class PresetModeNotRestoredTests(unittest.TestCase):
+    DETAILS = {"saved_observed": True, "acknowledged_mode": "pro"}
+
+    def test_a_peer_without_a_diagnostic_keeps_the_mode_recovery_code(self):
+        envelope = {
+            "code": "preset_write_incomplete",
+            "type": "PresetModeRestoreError",
+            "message": "incomplete",
+            "details": {"preset_write": self.DETAILS},
+        }
+        rebuilt = diagnostics.sanitize_remote_error(envelope)["diagnostic"]
+        self.assertEqual(rebuilt["code"], "XB_PRESET_MODE_NOT_RESTORED")
+
+    def test_a_remote_outcome_never_forwards_the_peers_mode_fix(self):
+        outcome = {
+            "status": "failed",
+            "type": "PresetModeRestoreError",
+            "error": "incomplete",
+            "details": self.DETAILS,
+            "diagnostic": {"code": "XB_PRESET_MODE_NOT_RESTORED", "fix": "rm -rf"},
+        }
+        cleaned = diagnostics.sanitize_remote_result("machine_command", outcome)
+        self.assertEqual(cleaned["diagnostic"]["code"], "XB_PRESET_MODE_NOT_RESTORED")
+        self.assertIn("set_mode", cleaned["diagnostic"]["fix"])
+        self.assertNotIn("rm -rf", cleaned["diagnostic"]["fix"])
 
 
 class CliDiagnosticsTests(unittest.TestCase):

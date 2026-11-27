@@ -299,6 +299,22 @@ SPECS: tuple[DiagnosticSpec, ...] = (
         skill="skills/xbloom-studio-operate/SKILL.md#settings-and-scale",
     ),
     DiagnosticSpec(
+        code="XB_PRESET_MODE_NOT_RESTORED",
+        error_code="preset_write_incomplete",
+        title="Preset saved; machine not switched back to recipes mode",
+        default_cause=(
+            "A preset save was observed, but the machine did not acknowledge the "
+            "switch back to recipes mode."
+        ),
+        default_fix=(
+            "A save event was observed (not a readback); do not write the preset "
+            "again. Disconnect, check the machine, then switch it to recipes mode "
+            "there or, if the user agrees, run `machine_command` `set_mode` with "
+            "`recipes`."
+        ),
+        skill="skills/xbloom-studio-operate/SKILL.md#settings-and-scale",
+    ),
+    DiagnosticSpec(
         code="XB_MACHINE_BUSY",
         error_code="busy",
         title="Machine is busy with owned work",
