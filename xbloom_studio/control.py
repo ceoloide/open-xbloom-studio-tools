@@ -23,6 +23,8 @@ from .command_schema import MAX_OPERATION_TIMEOUT, water_timeout
 from .connector import Connector
 from .events import decode_event, protocol_error
 from .machine_controls import (
+    ACTIVE_STATES,
+    TEA_SOAKING_STATE,
     MachineControls,
     UntestedOperationError,
     _number,
@@ -69,6 +71,7 @@ MACHINE_FAULT_KEYS: tuple[SeenKey, ...] = tuple(
 GRINDER_MOTION: tuple[SeenKey, ...] = ((8023, MOTION_STATES[0]), (9003, None))
 BREWER_MOTION: tuple[SeenKey, ...] = (
     (8023, MOTION_STATES[1]),
+    (8023, TEA_SOAKING_STATE),
     (9005, None),
     (40502, None),
     (40520, None),  # bypass started
@@ -244,12 +247,14 @@ class Operation:
     cleanup_status: str = "pending"
     error: str | None = None
     protocol_error: dict[str, Any] | None = None
+    fault_event: dict[str, Any] | None = None
     pending_user_action: str | None = None
     last_machine_event: dict[str, Any] | None = None
     _task: asyncio.Task[None] | None = field(default=None, repr=False)
     _armed: bool = field(default=False, repr=False)
     _stop_requested: bool = field(default=False, repr=False)
     _paused: bool = field(default=False, repr=False)
+    _fault_is_low_water: bool = field(default=False, repr=False)
     _final: dict[str, Any] | None = field(default=None, repr=False)
     # Event revision at launch: faults or motion after it block the start.
     _since: int = field(default=0, repr=False)
@@ -277,6 +282,7 @@ class Operation:
                 "cleanup_status",
                 "error",
                 "protocol_error",
+                "fault_event",
                 "pending_user_action",
                 "last_machine_event",
             )
@@ -560,7 +566,7 @@ class Interaction(MachineControls, ReadOnlyClient):
             state = int.from_bytes(packet.payload[:4], "little")
             self._seen[(8023, state)] = self._event_revision
             self._seen[STATE_REPORT] = self._event_revision
-            if state not in MOTION_STATES:
+            if state not in ACTIVE_STATES:
                 self._seen[STATE_AT_REST] = self._event_revision
         if packet.command == 40521 and self._identity_water is False:
             self._seen[LOW_WATER] = self._event_revision
@@ -574,10 +580,12 @@ class Interaction(MachineControls, ReadOnlyClient):
         if self._event_latch is not None:
             self._event_latch(self._event_revision, packet)
         op = self.operation
-        if op is None or op._task is None or op._task.done() or not op._armed:
+        if op is None or op._task is None or op._task.done():
             return
-        if packet.command in MEASUREMENTS:
-            return  # measurements live in the state cache, not an event queue
+        if packet.command in FAULT_EVENTS and not water_ok:
+            self._record_fault_event(op, packet)
+        if not op._armed or packet.command in MEASUREMENTS:
+            return
         self._observe(op, packet)
         self._signal()
 
@@ -615,7 +623,7 @@ class Interaction(MachineControls, ReadOnlyClient):
         context = code in (8111, 9000, 9001, 9002, 9004, 9006, 9008)
         if code == 8023 and len(payload) >= 4:
             state = int.from_bytes(payload[:4], "little")
-            motion = state in MOTION_STATES
+            motion = state in ACTIVE_STATES
             context = state in CONTEXT_STATES
         if motion or fault or context:
             self._invalidate_preparation(
@@ -628,14 +636,28 @@ class Interaction(MachineControls, ReadOnlyClient):
             if motion or fault:
                 self._uncertain = True
 
-    def _observe(self, op: Operation, packet: Packet) -> None:
-        code, payload = packet.command, packet.payload
-        event = {
+    def _raw_event(self, packet: Packet) -> dict[str, Any]:
+        return {
             "revision": self._event_revision,
             "at": datetime.now(UTC).isoformat(),
-            "command": code,
-            "payload": payload.hex(),
+            "command": packet.command,
+            "payload": packet.payload.hex(),
         }
+
+    def _record_fault_event(self, op: Operation, packet: Packet) -> None:
+        if op.status != "running":
+            return
+        low_water = packet.command == 40522 and _known_low_water(packet.payload)
+        if op.fault_event is not None and (low_water or not op._fault_is_low_water):
+            return
+        event = self._raw_event(packet)
+        decoded = decode_event(packet)
+        op.fault_event = {**event, **decoded} if decoded is not None else event
+        op._fault_is_low_water = low_water
+
+    def _observe(self, op: Operation, packet: Packet) -> None:
+        code, payload = packet.command, packet.payload
+        event = self._raw_event(packet)
         op.last_machine_event = event
         try:
             decoded = decode_event(packet)
@@ -685,6 +707,10 @@ class Interaction(MachineControls, ReadOnlyClient):
             ):
                 op.start_observed = True
             op.phase = "grinding" if state == 0x22 else "pouring"
+            op._paused = False
+        elif op.kind == "tea" and state == TEA_SOAKING_STATE:
+            op.start_observed = True
+            op.phase = "soaking"
             op._paused = False
         elif (op.kind, state) in (("grinder", 2), ("water", 3)):
             op._paused = True
@@ -810,7 +836,7 @@ class Interaction(MachineControls, ReadOnlyClient):
 
     def _motion_reported(self) -> bool:
         activity = self.state.observations.get("machine_state_code")
-        if activity and activity.value in MOTION_STATES:
+        if activity and activity.value in ACTIVE_STATES:
             return True
         # A motion event newer than its own actuator's stop and any rest state
         # is outstanding even when the last state code or identity looks idle.
@@ -1445,8 +1471,12 @@ class Interaction(MachineControls, ReadOnlyClient):
             raise ProtocolCommandError(
                 op.protocol_error, op.protocol_error.get("pending_command")
             )
-        if self._last(FAULT_KEYS) > op._since:
-            raise SessionError("Machine reported a fault; inspect last machine event")
+        if self._last(MACHINE_FAULT_KEYS) > op._since:
+            raise SessionError("Machine reported a fault; inspect fault_event")
+        if self._seen.get((40522, None), 0) > op._since:
+            raise InsufficientWaterError(
+                "Machine reported insufficient water during operation"
+            )
         # Only the latest qualifying completion counts, and only while no
         # relevant motion is newer: superseded completion neither ends the
         # operation nor comes back with a later, unrelated stop or rest.

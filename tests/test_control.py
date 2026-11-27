@@ -733,10 +733,63 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
             m.emit(40522, b"\0" * 4)
             result = await op.wait()
             self.assertEqual(result["status"], "failed")
-            self.assertIn("fault", result["error"])
+            self.assertIn("InsufficientWaterError", result["error"])
+            self.assertIn("insufficient water", result["error"])
+            self.assertEqual(result["fault_event"]["command"], 40522)
+            self.assertEqual(result["fault_event"]["payload"], "00000000")
             self.assertTrue(result["stop_acknowledged"])
             with self.assertRaisesRegex(SessionError, "Water sufficiency"):
                 await session.start_water(volume_ml=10)
+
+    async def test_running_hardware_fault_preserves_fault_event_across_cleanup(self):
+        m = Machine()
+        async with interaction(m) as session:
+            op = await session.start_water(volume_ml=10)
+            await transmitted(m, 4506)
+            m.overrides[8022] = lambda p: [reply(8022), reply(8204)]
+            m.emit(8203)
+            result = await op.wait()
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Machine reported a fault", result["error"])
+        self.assertEqual(result["fault_event"]["command"], 8203)
+        self.assertEqual(result["fault_event"]["name"], "abnormal_grinder_position")
+        self.assertEqual(result["last_machine_event"]["command"], 8204)
+
+    async def test_hardware_fault_outranks_low_water_in_fault_event_and_error(self):
+        m = Machine()
+        async with interaction(m) as session:
+            op = await session.start_water(volume_ml=10)
+            await transmitted(m, 4506)
+            m.emit(40522, u32(0))
+            m.emit(40522, u32(0))
+            m.emit(40522, u32(3))
+            m.emit(8203)
+            result = await op.wait()
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("SessionError", result["error"])
+        self.assertEqual(result["fault_event"]["command"], 40522)
+        self.assertEqual(result["fault_event"]["payload"], u32(3).hex())
+
+    async def test_prestart_fault_records_fault_event_without_sending_start(self):
+        m = Machine()
+        m.overrides[4510] = lambda p: [reply(4510), reply(40517)]
+        async with interaction(m) as session:
+            result = await (await session.start_water(volume_ml=10)).wait()
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn(4506, m.codes())
+        self.assertEqual(result["fault_event"]["command"], 40517)
+        self.assertEqual(result["fault_event"]["name"], "idling_fault")
+
+    async def test_non_tea_recipe_treats_0x45_as_unknown_machine_stage(self):
+        m = Machine()
+        async with interaction(m) as session:
+            op = await session.start_recipe(EncodedRecipe(b"coffee", 10))
+            await transmitted(m, 8002)
+            m.state(0x45)
+            self.assertEqual(op.phase, "unknown_machine_stage")
+            m.state(0x24)
+            result = await op.wait()
+        self.assertEqual(result["status"], "completed")
 
     async def test_water_ok_report_during_a_pour_is_not_a_fault(self):
         m = Machine()

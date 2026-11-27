@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 PRESET_SAVED = b"\x25\0\0\0"
 # Observed instead of a save when the machine refused a single-slot write.
 PRESET_REJECTED = b"\x44\0\0\0"
+# Observed on V12.0D.500 during active tea soaking after 9012 (tea_soaking).
+TEA_SOAKING_STATE = 0x45
+ACTIVE_STATES = (0x22, 0x23, TEA_SOAKING_STATE)
 RECIPES_MODE = bytes.fromhex("91327856")
 PRO_MODE = b"\0" * 4
 PATTERNS = {"center": 0, "ring": 1, "spiral": 2}
@@ -994,7 +997,7 @@ class MachineControls:
     async def _housekeeping(self, code: int) -> dict[str, Any]:
         self._require_untested(f"Housekeeping command {code}")
         activity = self.state.observations.get("machine_state_code")
-        if activity and activity.value in (0x22, 0x23):
+        if activity and activity.value in ACTIVE_STATES:
             raise SessionError("Stop active motion before housekeeping commands")
         return await self._setting(
             code,
