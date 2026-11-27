@@ -168,7 +168,7 @@ class ContractTests(ToolCase):
             (
                 "write_preset",
                 {"preset": {"slot": "A", "payload_hex": "6e", "flags": 4}},
-                "pro",
+                "recipes",
             ),
         )
         for command, params, mode in cases:

@@ -805,13 +805,16 @@ class Interaction(MachineControls, ReadOnlyClient):
             )
         if self.operation is not None and not self.operation.done:
             raise BusyError("An operation already owns this interaction")
+        if self._motion_reported():
+            raise BusyError("Machine reports motion outside an owned operation")
+
+    def _motion_reported(self) -> bool:
         activity = self.state.observations.get("machine_state_code")
         if activity and activity.value in MOTION_STATES:
-            raise BusyError("Machine reports motion outside an owned operation")
+            return True
         # A motion event newer than its own actuator's stop and any rest state
         # is outstanding even when the last state code or identity looks idle.
-        if self._outstanding(0, MACHINE_REST):
-            raise BusyError("Machine reports motion outside an owned operation")
+        return self._outstanding(0, MACHINE_REST)
 
     async def _wait_event(
         self,

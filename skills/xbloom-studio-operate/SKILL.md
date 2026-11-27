@@ -130,10 +130,13 @@ Preset writes are experimental. A backup of a slot's previous contents is
 optional for `write_preset` and required for `write_presets`; use only
 contents the user supplies, never ones built from local aliases. Nothing
 reads a preset back: even a success reports `readback_verified=false`. A
-preset write switches the machine to pro mode while preparing and leaves it
-there; `set_mode` with `recipes` switches back if the user wants. Both report
-the switch the machine acknowledged as `acknowledged_mode`, a failed write's
-`details` included; it is not a telemetry readback.
+preset write switches the machine to pro mode to write, then back to recipes
+mode, after a failed or cancelled attempt too. A write and `set_mode` report the
+last switch the machine acknowledged as `acknowledged_mode`, a failed write's
+`details` included; it is not a telemetry readback. On a failed write the switch
+back is best effort: nothing is sent while the machine reports motion or the
+link is lost. If `acknowledged_mode` is not `recipes`, tell the user, and use
+`set_mode` with `recipes` if they want.
 
 One `write_preset` call is one attempt of three planned frames. Its result's
 `attempt` field gives the `outcome` (`saved`, `saved_cleanup_failed`,

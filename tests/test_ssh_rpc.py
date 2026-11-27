@@ -240,10 +240,10 @@ class CarrierTests(unittest.IsolatedAsyncioTestCase):
         while not self.audit.exists():
             self.assertFalse(pending.done())
             await asyncio.sleep(0.01)
-        with patch.object(loop, "time", lambda now=loop.time: now() + 70):
+        with patch.object(loop, "time", lambda now=loop.time: now() + 80):
             await asyncio.wait({pending}, timeout=0.5)
             self.assertFalse(pending.done())
-        with patch.object(loop, "time", lambda now=loop.time: now() + 80):
+        with patch.object(loop, "time", lambda now=loop.time: now() + 100):
             with self.assertRaisesRegex(ConnectionError, "timed out"):
                 await pending
 

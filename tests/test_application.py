@@ -1207,11 +1207,11 @@ class PresetRetryTests(ServiceCase):
     def journal(self, kind, **data):
         self.store.append(kind, data, device=self.service.device)
 
-    async def test_a_rejected_write_reports_its_mode_ack(self):
+    async def test_a_rejected_write_reports_the_switch_back(self):
         self.machine.studio.reject_preset_attempts = 1
         result = await self.write()
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["details"]["acknowledged_mode"], "pro")
+        self.assertEqual(result["details"]["acknowledged_mode"], "recipes")
 
     async def test_rejected_write_repeats_identically_in_a_fresh_session(self):
         self.machine.studio.reject_preset_attempts = 1
@@ -2532,8 +2532,9 @@ class PresetRetryTests(ServiceCase):
             and e["kind"] != "ble.packet"
         ]
         # Preparation frames, then the preset frame's withheld first chunk.
+        withheld_at = session.index("command.write_failed") + 1
         self.assertEqual(
-            session[-4:],
+            session[:withheld_at][-4:],
             [
                 "command.intent",
                 "ble.outgoing_chunk",
@@ -2547,7 +2548,8 @@ class PresetRetryTests(ServiceCase):
             if e["kind"] == "command.intent"
             and e["session_id"] == self.service.recorder.session_id
         ]
-        self.assertEqual(intents[-1], 11510)
+        # Only the switch back to recipes mode follows the preset frame.
+        self.assertEqual(intents[intents.index(11510) :], [11510, 8022, 11511])
         self.assertEqual(intents.count(11510), 1)
         self.assertEqual(self.frames(), frames)
         await self.service.close()
@@ -2677,7 +2679,8 @@ class PresetRetryTests(ServiceCase):
         self.assertIn("No attempt sent a preset frame", attempt["next_step"])
         with self.assertRaises(PresetWriteRefused):
             await self.write()
-        self.assertEqual((self.frames(), self.machine.codes().count(11511)), (0, 3))
+        # Each attempt tries pro mode, then the switch back to recipes.
+        self.assertEqual((self.frames(), self.machine.codes().count(11511)), (0, 6))
 
     def started_ids(self):
         return [

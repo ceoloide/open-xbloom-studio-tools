@@ -13,24 +13,29 @@ from .serialization import dumps
 MAX_REQUEST = 2 * 1024 * 1024
 MAX_RESPONSE = 32 * 1024 * 1024
 DEFAULT_TIMEOUT = 30.0
+# A preset write switches back to recipes mode before replying: two
+# acknowledgment waits and two settle delays beyond the write itself.
+PRESET_RESTORE_TIMEOUT = 16.0
 
 
 def default_timeout(method: str, params: Mapping[str, Any] | None) -> float:
-    if (
+    if not (
         method == "machine_command"
         and isinstance(params, Mapping)
         and params.get("command") in ("write_preset", "write_presets")
-        and isinstance(params.get("params"), Mapping)
     ):
-        save = params["params"].get("save_timeout")
-        if (
-            isinstance(save, (int, float))
-            and not isinstance(save, bool)
-            and math.isfinite(save)
-            and save > 0
-        ):
-            return DEFAULT_TIMEOUT + min(save, MAX_SAVE_TIMEOUT)
-    return DEFAULT_TIMEOUT
+        return DEFAULT_TIMEOUT
+    budget = DEFAULT_TIMEOUT + PRESET_RESTORE_TIMEOUT
+    options = params.get("params")
+    save = options.get("save_timeout") if isinstance(options, Mapping) else None
+    if (
+        isinstance(save, (int, float))
+        and not isinstance(save, bool)
+        and math.isfinite(save)
+        and save > 0
+    ):
+        budget += min(save, MAX_SAVE_TIMEOUT)
+    return budget
 
 
 def frame(

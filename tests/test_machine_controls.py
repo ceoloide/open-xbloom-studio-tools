@@ -26,6 +26,8 @@ from xbloom_studio.simulator import device_info
 HOME, MODE = 8022, 11511
 RECIPES = bytes.fromhex("91327856")
 PREPARE = [HOME, MODE]
+RESTORE = [HOME, MODE]
+PRO = b"\0" * 4
 NO_WATER = 0x0C
 # V12.0D.500's refusal of 11510 in the no-water state.
 NO_WATER_REFUSAL = bytes.fromhex("0000000000000000000000000040000c")
@@ -550,7 +552,7 @@ class PresetTests(Base):
             m.payloads(11510),
             [b"\0\x04AAA", b"\x01\x04BBB", b"\x02\x04CCC"],
         )
-        self.assertEqual(m.codes()[1:], [*PREPARE, 11510, 11510, 11510, HOME])
+        self.assertEqual(m.codes()[1:], [*PREPARE, 11510, 11510, 11510, *RESTORE])
 
     async def test_single_slot_write_sends_three_planned_messages(self):
         m = Machine()
@@ -572,7 +574,7 @@ class PresetTests(Base):
         self.assertEqual(m.payloads(11510), [b"\x01\x02new"] * 3)
         self.assertFalse(self.path("second.json").exists())
 
-    async def test_preset_writes_report_the_pro_mode_they_select(self):
+    async def test_preset_writes_switch_back_to_recipes_mode(self):
         writes = {
             "single": lambda session: session.write_preset(SavedPreset("A", b"n", 4)),
             "batch": lambda session: session.write_presets(
@@ -588,11 +590,11 @@ class PresetTests(Base):
                 async with interaction(m, allow_untested=True) as session:
                     result = await write(session)
                     self.assertEqual(
-                        session.get_state()["last_acknowledged_mode"], "pro"
+                        session.get_state()["last_acknowledged_mode"], "recipes"
                     )
-                    self.assertEqual(configured_mode(session), "recipes")
                 self.assertTrue(result["saved_observed"])
-                self.assertEqual(result["acknowledged_mode"], "pro")
+                self.assertEqual(result["acknowledged_mode"], "recipes")
+                self.assertEqual(m.payloads(MODE), [PRO, RECIPES])
                 self.assertFalse(result["readback_verified"])
 
     async def test_early_completion_stops_further_single_slot_writes(self):
@@ -660,7 +662,10 @@ class PresetTests(Base):
         result = caught.exception.result
         self.assertTrue(result["saved_observed"])
         self.assertIn("TimeoutError", result["error"])
-        self.assertEqual(len(homes), 2)
+        self.assertEqual(result["outcome"], "saved_cleanup_failed")
+        # Preparation, the unanswered home, then the restore's own attempt.
+        self.assertEqual(len(homes), 3)
+        self.assertEqual(result["acknowledged_mode"], "recipes")
 
     async def test_cancelled_write_keeps_backup_and_propagates(self):
         m = Machine()
@@ -792,7 +797,7 @@ class PresetAttemptTests(Base):
             [(e["command"], e["payload_hex"]) for e in result["rejection_evidence"]],
             [(11510, "00000000000000000000000000400044"), (8023, "44000000")],
         )
-        self.assertEqual(m.codes()[1:], [*PREPARE, 11510, 11510, 11510])
+        self.assertEqual(m.codes()[1:], [*PREPARE, 11510, 11510, 11510, *RESTORE])
 
     async def test_a_refusal_report_ends_the_attempt_without_an_ack_wait(self):
         m = Machine()
@@ -807,12 +812,70 @@ class PresetAttemptTests(Base):
         )
         self.assertEqual(m.codes().count(11510), 1)
 
-    async def test_a_rejected_attempt_reports_its_mode_ack(self):
+    async def test_a_rejected_attempt_switches_back_to_recipes_mode(self):
         m = Machine()
         m.studio.reject_preset_attempts = 1
         result = await self.attempt(m)
         self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["acknowledged_mode"], "recipes")
+        self.assertEqual(m.payloads(MODE), [PRO, RECIPES])
+
+    async def test_an_unacknowledged_frame_still_switches_back(self):
+        m = Machine()
+        m.studio.silent.add(11510)
+        result = await self.attempt(m, ack_timeout=0.05)
+        self.assertEqual(result["outcome"], "unconfirmed")
+        self.assertEqual(result["acknowledged_mode"], "recipes")
+        self.assertEqual(m.codes()[1:], [*PREPARE, 11510, *RESTORE])
+
+    async def test_an_unacknowledged_pro_switch_still_switches_back(self):
+        m = Machine()
+
+        def mode(packet):
+            return [] if packet.payload == PRO else m.studio(packet)
+
+        m.overrides[MODE] = mode
+        result = await self.attempt(m, ack_timeout=0.05)
+        self.assertEqual(result["outcome"], "no_preset_frame")
+        self.assertEqual(result["acknowledged_mode"], "recipes")
+
+    async def test_a_failed_switch_back_keeps_the_attempts_own_error(self):
+        m = Machine()
+        m.studio.reject_preset_attempts = 1
+
+        def mode(packet):
+            return [] if packet.payload == RECIPES else m.studio(packet)
+
+        m.overrides[MODE] = mode
+        result = await self.attempt(m, ack_timeout=0.05)
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertIn("not an empty acknowledgment", result["error"])
         self.assertEqual(result["acknowledged_mode"], "pro")
+
+    async def test_no_switch_back_while_the_machine_reports_motion(self):
+        m = Machine()
+        m.overrides[11510] = lambda p: [reply(11510, b"", 0xC2), reply(8023, u32(0x22))]
+        result = await self.attempt(m)
+        self.assertEqual(result["acknowledged_mode"], "pro")
+        self.assertEqual(m.codes()[1:], [*PREPARE, 11510])
+
+    async def test_a_cancellation_during_the_switch_back_propagates(self):
+        m = Machine()
+        m.studio.reject_preset_attempts = 1
+
+        def mode(packet):
+            return [] if packet.payload == RECIPES else m.studio(packet)
+
+        m.overrides[MODE] = mode
+        async with interaction(m, allow_untested=True, ack_timeout=30) as session:
+            task = asyncio.create_task(session.write_preset(SavedPreset("A", b"n", 4)))
+            await until(lambda: m.payloads(MODE)[-1:] == [RECIPES])
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            attempt = session.get_state()["last_preset_write"]
+        self.assertEqual(attempt["acknowledged_mode"], "pro")
+        self.assertIsNotNone(attempt["outcome"])
 
     async def test_an_unacknowledged_mode_change_reports_no_mode(self):
         m = Machine()
@@ -824,7 +887,7 @@ class PresetAttemptTests(Base):
         self.assertIsNone(caught.exception.result["acknowledged_mode"])
         self.assertNotIn(11510, m.codes())
 
-    async def test_a_cancellation_after_the_mode_ack_reports_it(self):
+    async def test_a_cancellation_after_the_mode_ack_switches_back(self):
         m = Machine()
         async with interaction(m, allow_untested=True, transition_delay=0.2) as session:
             task = asyncio.create_task(session.write_preset(SavedPreset("A", b"n", 4)))
@@ -833,7 +896,7 @@ class PresetAttemptTests(Base):
             with self.assertRaises(asyncio.CancelledError):
                 await task
             attempt = session.get_state()["last_preset_write"]
-        self.assertEqual(attempt["acknowledged_mode"], "pro")
+        self.assertEqual(attempt["acknowledged_mode"], "recipes")
         self.assertNotIn(11510, m.codes())
 
     async def test_link_loss_after_the_mode_ack_keeps_it_in_the_attempt(self):
@@ -897,7 +960,7 @@ class PresetAttemptTests(Base):
                 ]
                 result = await self.attempt(m)
                 self.assertEqual(result["outcome"], "no_preset_frame")
-                self.assertEqual(m.codes()[1:], PREPARE)
+                self.assertEqual(m.codes()[1:], [*PREPARE, *RESTORE])
 
     async def test_rejection_state_is_checked_before_the_next_frame(self):
         m = Machine()

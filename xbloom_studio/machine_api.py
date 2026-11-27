@@ -74,10 +74,11 @@ COMMANDS = {
     "write_preset": "Experimental single-slot attempt of three planned frames; "
     "an incomplete write may be resubmitted identically, at most "
     f"{MAX_ATTEMPTS} attempts per machine and slot. Optional backup is not "
-    "readback. Leaves the machine in pro mode.",
+    "readback. Writes in pro mode, then switches back to recipes mode.",
     "write_presets": "Write A/B/C once each; requires caller-supplied backups. "
     "Refused over an incomplete write_preset; supersedes each slot's recorded "
-    "write before its first frame for that slot. Leaves the machine in pro mode.",
+    "write before its first frame for that slot. Writes in pro mode, then "
+    "switches back to recipes mode.",
     "set_water_source": "Select tank/tap source by the existing validated argument "
     "contract.",
     "read_pour_radius": "Query current raw value; also prepares/home the machine.",
