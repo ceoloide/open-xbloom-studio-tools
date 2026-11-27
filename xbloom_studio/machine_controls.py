@@ -57,6 +57,10 @@ class PresetWriteError(SessionError):
         self.result = result
 
 
+class PresetModeRestoreError(PresetWriteError):
+    """A save was observed, but the switch back to recipes mode was not."""
+
+
 def preset_outcome(result: dict[str, Any], exc: BaseException | None) -> str:
     """Classify one write attempt from its evidence; never a content readback."""
     if result["saved_observed"]:
@@ -337,6 +341,7 @@ class MachineControls:
         async def _prepare(self) -> None: ...
 
         def _record_mode_ack(self, mode: str) -> None: ...
+        def _motion_reported(self) -> bool: ...
 
         def _water_source(self) -> int: ...
 
@@ -699,12 +704,18 @@ class MachineControls:
                 await send(attempt)
                 await self._command(8022)
                 await asyncio.sleep(self.transition_delay)
+                await self._select_recipes_mode(result)
                 result["outcome"] = preset_outcome(result, None)
                 return {
                     **result,
                     "acknowledged_slots": result["acknowledged_slots"].copy(),
                 }
-            except BaseException as exc:
+            except BaseException as failure:
+                exc = failure
+                try:
+                    await self._restore_recipes_mode(result)
+                except asyncio.CancelledError as cancelled:
+                    exc = cancelled
                 start, cursor = attempt.start, attempt.cursor
                 if start is not None and cursor is not None:
                     after = start if late_save_after == "first_frame" else cursor
@@ -726,7 +737,13 @@ class MachineControls:
                 result["error"] = f"{type(exc).__name__}: {exc}"
                 result["outcome"] = preset_outcome(result, exc)
                 if isinstance(exc, asyncio.CancelledError):
-                    raise
+                    raise exc from exc.__cause__
+                if result["saved_observed"] and result["acknowledged_mode"] == "pro":
+                    raise PresetModeRestoreError(
+                        "Preset save observed, but the switch back to recipes mode "
+                        "was not acknowledged",
+                        result,
+                    ) from exc
                 raise PresetWriteError(
                     "Preset write incomplete; inspect result and backup before "
                     "recovery in a fresh interaction",
@@ -735,6 +752,30 @@ class MachineControls:
             finally:
                 self._event_latch = None
                 self._keep_cancellation = False
+
+    async def _select_recipes_mode(self, result: dict[str, Any]) -> None:
+        await self._command(11511, RECIPES_MODE, 2)
+        self._record_mode_ack("recipes")
+        result["acknowledged_mode"] = "recipes"
+        await asyncio.sleep(self.transition_delay)
+
+    async def _restore_recipes_mode(self, result: dict[str, Any]) -> None:
+        """Best effort after a failed attempt, even an uncertain one.
+
+        Preparation may have selected pro mode without its ACK arriving. Neither
+        command repeats a preset frame, and a failure here keeps the attempt's
+        own error. A missed home ACK still lets the mode switch go out. Nothing
+        is sent while the machine reports motion.
+        """
+        if result["acknowledged_mode"] == "recipes" or self._motion_reported():
+            return
+        with suppress(Exception):
+            await self._command(8022)
+            await asyncio.sleep(self.transition_delay)
+        if self._motion_reported():
+            return
+        with suppress(Exception):
+            await self._select_recipes_mode(result)
 
     async def _send_preset_frame(
         self,

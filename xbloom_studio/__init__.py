@@ -22,6 +22,7 @@ from .grind_profiles import grind_profile
 from .intents import Studio, capabilities, plan
 from .machine_controls import (
     EncodedTeaRecipe,
+    PresetModeRestoreError,
     PresetWriteError,
     SavedPreset,
     UntestedOperationError,
@@ -45,6 +46,7 @@ __all__ = [
     "InsufficientWaterError",
     "Interaction",
     "Operation",
+    "PresetModeRestoreError",
     "PresetWriteError",
     "ProtocolCommandError",
     "ReadOnlyClient",

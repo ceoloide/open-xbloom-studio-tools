@@ -17,6 +17,7 @@ from .client import ProtocolCommandError, SessionError
 from .command_schema import CommandValidationError
 from .control import BusyError, IdleStateRequiredError, InsufficientWaterError
 from .diagnostics import (
+    CATALOG,
     DiagnosticContext,
     InputFileReadError,
     LocalJsonSyntaxError,
@@ -30,6 +31,7 @@ from .diagnostics import (
 from .machine_controls import (
     ControlPermissionError,
     ExperimentalOptInError,
+    PresetModeRestoreError,
     PresetWriteError,
     UntestedOperationError,
 )
@@ -218,6 +220,9 @@ def error_detail(
             "identical single-slot write that machine_preset_writes reports as "
             "retry_allowed."
         )
+        if isinstance(exc, PresetModeRestoreError):
+            spec = CATALOG["XB_PRESET_MODE_NOT_RESTORED"]
+            message, next_step = spec.default_cause, spec.default_fix
         return _detail(
             name,
             "preset_write_incomplete",

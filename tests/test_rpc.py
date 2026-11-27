@@ -80,16 +80,16 @@ class WireTests(unittest.TestCase):
             return {"command": command, "params": {"save_timeout": save}}
 
         for params, budget in (
-            (preset(45), 75),
-            (preset(45, "write_presets"), 75),
-            (preset(1e9), 90),
-            (preset(0), 30),
-            (preset(-1), 30),
-            (preset(float("inf")), 30),
-            (preset(float("nan")), 30),
-            (preset(True), 30),
-            (preset("45"), 30),
-            ({"command": "write_preset", "params": None}, 30),
+            (preset(45), 91),
+            (preset(45, "write_presets"), 91),
+            (preset(1e9), 106),
+            (preset(0), 46),
+            (preset(-1), 46),
+            (preset(float("inf")), 46),
+            (preset(float("nan")), 46),
+            (preset(True), 46),
+            (preset("45"), 46),
+            ({"command": "write_preset", "params": None}, 46),
             ({"command": "set_brightness", "params": {"save_timeout": 45}}, 30),
             (None, 30),
         ):
