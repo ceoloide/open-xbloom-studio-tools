@@ -495,6 +495,52 @@ class TeaTests(Base):
             with self.assertRaises(ValueError):
                 EncodedTeaRecipe(**kwargs)
 
+    async def test_tea_soaking_state_0x45_keeps_soaking_phase_and_blocks_rest(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            op = await session.start_tea(EncodedTeaRecipe(b"tea"))
+            await transmitted(m, 4512)
+            m.emit(40502)
+            m.state(0x23)
+            self.assertEqual(op.phase, "pouring")
+            m.emit(9012)
+            self.assertEqual(op.phase, "soaking")
+            m.state(0x45)
+            self.assertEqual(op.phase, "soaking")
+            self.assertTrue(op.start_observed)
+            self.assertTrue(session._moving(op))
+            m.state(0x23)
+            self.assertEqual(op.phase, "pouring")
+            m.emit(40511)
+            m.emit(40512)
+            m.emit(40513)
+            m.state(1)
+            result = await op.wait()
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["fault_event"])
+
+    async def test_tea_soaking_0x45_invalidates_prepared_tea(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            prepared = await session.upload_tea(EncodedTeaRecipe(b"tea"))
+            m.state(0x45)
+            self.assertIsNone(session.get_state()["prepared"])
+            self.assertEqual(
+                session.get_state()["last_preparation"]["reason"], "machine_motion"
+            )
+            with self.assertRaises(SessionError):
+                await session.start_prepared(prepared["token"])
+
+    async def test_tea_soaking_0x45_blocks_start_and_housekeeping(self):
+        m = Machine()
+        async with interaction(m, allow_untested=True) as session:
+            m.state(0x45)
+            with self.assertRaises(BusyError) as ctx:
+                await session.start_water(volume_ml=10)
+            self.assertIs(type(ctx.exception), BusyError)
+            with self.assertRaisesRegex(SessionError, "Stop active motion"):
+                await session.quit_recipe_preparation()
+
 
 class PresetTests(Base):
     def test_preset_frames_are_validated_before_becoming_slot_contents(self):
